@@ -11,6 +11,7 @@ from andes.models.exciter.exac4 import EXAC4  # NOQA
 from andes.models.exciter.exdc2 import EXDC2  # NOQA
 from andes.models.exciter.exst1 import EXST1  # NOQA
 from andes.models.exciter.ieeet1 import IEEET1  # NOQA
+from andes.models.exciter.ieeet2 import IEEET2  # NOQA
 from andes.models.exciter.ieeet3 import IEEET3  # NOQA
 from andes.models.exciter.ieeex1 import IEEEX1  # NOQA
 from andes.models.exciter.saturation import ExcExpSat, ExcQuadSat  # NOQA
