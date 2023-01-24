@@ -1014,6 +1014,46 @@ IEEET1:
         E2: E2
         SE2: SE2
 
+IEEET2:
+    inputs:
+        - BUS
+        - ID
+        - TR
+        - KA
+        - TA
+        - VRMAX
+        - VRMIN
+        - KE
+        - TE
+        - KF
+        - TF1
+        - TF2
+        - E1
+        - SE1
+        - E2
+        - SE2
+    destination: IEEET2
+    find:
+        syn:
+            SynGen:
+                bus: BUS
+                subidx: ID
+    outputs:
+        syn: syn
+        TR: TR
+        KA: KA
+        TA: TA
+        VRMAX: VRMAX
+        VRMIN: VRMIN
+        KE: KE
+        TE: TE
+        KF: KF
+        TF1: TF1
+        TF2: TF2
+        E1: E1
+        SE1: SE1
+        E2: E2
+        SE2: SE2
 
 GAST:
     inputs:
@@ -1308,6 +1348,39 @@ IEEEST:
         LSMIN: LSMIN
         VCU: VCU
         VCL: VCL
+
+STAB2A:
+    inputs:
+        - BUS
+        - ID
+        - K2
+        - T2
+        - K3
+        - T3
+        - K4
+        - K5
+        - T5
+        - Hlim
+
+    destination: STAB2A
+    find:
+        syn:
+            SynGen:
+                bus: BUS
+                subidx: ID
+        avr:
+            Exciter:
+                syn: syn
+    outputs:
+        avr: avr
+        K2: K2
+        T2: T2
+        K3: K3
+        T3: T3
+        K4: K4
+        K5: K5
+        T5: T5
+        HLIM_MAX: Hlim
 
 ST2CUT:
     inputs:
