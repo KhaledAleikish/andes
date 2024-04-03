@@ -6,8 +6,42 @@ Release notes
 
 The APIs before v3.0.0 are in beta and may change without prior notice.
 
+v1.9 Notes
+==========
+
+v1.9.2 (2024-03-25)
+-------------------
+- Improve PSS/E parser for the `wmod` field in the static generator
+  section.
+- Consider line status when parsing PSS/E file.
+- Added functions in `Line` for building network admittance matrix, `Bdc`
+  matrix for DC power flow, and `Bp` and `Bpp` matrices for fast decoupled
+  power flow. See ``build_y``, ``build_b`` and ``build_Bdc``.
+
+v1.9.1 (2024-02-04)
+-------------------
+This is a hotfix to pass ``pip check`` for KVXOPT version.
+
+v1.9.0 (2024-02-01)
+-------------------
+- Initially, ``dae.t`` is set to ``-1.0`` during power flow calculation. TDS
+  initialization will set ``dae.t = 0.0``.
+- Rewritten the islanding detection algorithm.
+- In ``system.py``, import ``importlib.util`` to workaround unexported `util`
+  module in Python 3.10.
+
 v1.8 Notes
 ==========
+
+v1.8.10 (2023-08-10)
+--------------------
+- An internal change to the xlsx parser option. Previously, the index column was
+  set to 0, which assumes the existence of `uid` as the header. Manually input
+  sheets without `uid` will fail. This version unsets the index column when
+  using pandas to parse the xlsx file.
+- `Jumper` is included for connectivity check.
+- Add curly brackets for LaTeX symbols from sub-blocks. Nested symbols with
+  subscripts and superscripts now display properly.
 
 v1.8.9 (2023-06-22)
 -------------------

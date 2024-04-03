@@ -112,9 +112,10 @@ class SymProcessor:
         # -----------------------------------------------------------
         for key in self.parent.tex_names.keys():
             self.tex_names[key] = sp.Symbol(self.parent.tex_names[key])
+
         for instance in self.parent.discrete.values():
             for name, tex_name in zip(instance.get_names(), instance.get_tex_names()):
-                self.tex_names[name] = tex_name
+                self.tex_names[name] = sp.Symbol(tex_name)
         # -----------------------------------------------------------
 
         for var in self.cache.all_params_names:
@@ -408,6 +409,7 @@ class SymProcessor:
             v_idx = vars_syms_list.index(var.name)
 
             self.calls.append_ijv(f'{var.e_code}{var.v_code}c', e_idx, v_idx, eps)
+            self.calls.need_diag_eps.append(var.name)
 
     def generate_pretty_print(self):
         """
@@ -517,7 +519,7 @@ from andes.thirdparty.npfunc import *                               # NOQA
 
         # variables
         for name in dilled_vars:
-            out.append(f'{name} = ' + pprint.pformat(self.calls.__dict__[name]))
+            out.append(f'{name} = ' + pprint.pformat(self.calls.__dict__[name]) + "\n")
 
         out_str = '\n'.join(out)
 

@@ -125,7 +125,7 @@ html_theme_options = {
 
 html_context = {
     "github_url": "https://github.com",
-    "github_user": "cuihantao",
+    "github_user": "curent",
     "github_repo": "andes",
     "github_version": "master",
     "doc_path": "docs/source",
@@ -230,7 +230,7 @@ shutil.rmtree("_examples", ignore_errors=True)
 shutil.copytree("../../examples", "_examples", )
 shutil.rmtree("_examples/demonstration")
 
-jupyter_execute_notebooks = "off"
+nb_execution_mode = "off"
 
 # sphinx-panels shouldn't add bootstrap css since the pydata-sphinx-theme
 # already loads it

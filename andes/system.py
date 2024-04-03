@@ -1,8 +1,8 @@
 """
-System class for power system data and methods
+System class for power system data and methods.
 """
 
-#  [ANDES] (C)2015-2022 Hantao Cui
+#  [ANDES] (C)2015-2024 Hantao Cui
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -13,6 +13,7 @@ System class for power system data and methods
 
 import configparser
 import importlib
+import importlib.util
 import inspect
 import logging
 import os
@@ -548,6 +549,9 @@ class System:
             param_dict = {}
         if kwargs is not None:
             param_dict.update(kwargs)
+
+        # remove `uid` field
+        param_dict.pop('uid', None)
 
         idx = param_dict.pop('idx', None)
         if idx is not None and (not isinstance(idx, str) and np.isnan(idx)):
@@ -1221,6 +1225,11 @@ class System:
         to.extend(self.Line.a2.a.tolist())
         u.extend(self.Line.u.v.tolist())
 
+        # collect from Jumper
+        fr.extend(self.Jumper.a1.a.tolist())
+        to.extend(self.Jumper.a2.a.tolist())
+        u.extend(self.Jumper.u.v.tolist())
+
         # collect from Fortescue
         fr.extend(self.Fortescue.a.a.tolist())
         to.extend(self.Fortescue.aa.a.tolist())
@@ -1240,7 +1249,6 @@ class System:
         diag = list(matrix(spmatrix(u, to, os, (n, 1), 'd') +
                            spmatrix(u, fr, os, (n, 1), 'd')))
 
-        nib = self.Bus.n_islanded_buses = diag.count(0)
         for idx in range(n):
             if diag[idx] == 0:
                 self.Bus.islanded_buses.append(idx)
@@ -1257,12 +1265,20 @@ class System:
                         'd')
         temp = sparse(temp)  # need to drop allocated zero values
 
-        cons = temp[0, :]
-        nelm = len(cons.J)
+        # Translated find_islanded_areas from goderya.jl into Python
         conn = spmatrix([], [], [], (1, n), 'd')
-        enum = idx = islands = 0
+        island_sets = []
+        starting_bus = 0
+        visit_idx = 0
 
         while True:
+            if starting_bus in self.Bus.islanded_buses:
+                starting_bus += 1
+                continue
+
+            cons = temp[starting_bus, :]
+            nelm = len(cons.J)
+
             while True:
                 cons = cons * temp
                 cons = sparse(cons)  # remove zero values
@@ -1271,31 +1287,24 @@ class System:
                     break
                 nelm = new_nelm
 
-            # started with an islanded bus
-            if len(conn.J) == 0:
-                enum += 1
-            # all buses are interconnected
-            elif len(cons.J) == n:
-                break
-
-            self.Bus.island_sets.append(list(cons.J))
+            island_sets.append(list(cons.J))
             conn += cons
-            islands += 1
-            nconn = len(conn.J)
-            if nconn >= (n - nib):
-                self.Bus.island_sets = [i for i in self.Bus.island_sets if len(i) > 0]
+
+            if len(conn.J) >= (n - len(self.Bus.islanded_buses)):
                 break
 
-            for element in conn.J[idx:]:
-                if not diag[idx]:
-                    enum += 1  # skip islanded buses
-                if element <= enum:
-                    idx += 1
-                    enum += 1
+            # Increment `starting_bus` until it's not in `conn.J` and
+            # `self.Bus.islanded_buses`
+            for i in range(visit_idx, self.Bus.n):
+                if i in conn.J or i in self.Bus.islanded_buses:
+                    i += 1
                 else:
+                    visit_idx = i
                     break
 
-            cons = temp[enum, :]
+            starting_bus = visit_idx
+
+        self.Bus.island_sets = island_sets
 
         # --- check if all areas have a slack generator ---
         if len(self.Bus.island_sets) > 0:

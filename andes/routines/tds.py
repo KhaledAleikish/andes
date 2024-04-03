@@ -84,7 +84,7 @@ class TDS(BaseRoutine):
                               store_i='store RHS of external algeb. equations',
                               limit_store='limit in-memory timeseries storage',
                               max_store='maximum steps of data stored in memory before offloading',
-                              save_every='save results for one step every "save_every" steps',
+                              save_every='save one step to memory every N simulation steps',
                               save_mode='automatically or manually save output data when done',
                               no_tqdm='disable tqdm progressbar and outputs',
                               chatter_iter='minimum iterations to detect chattering',
@@ -197,6 +197,7 @@ class TDS(BaseRoutine):
         # restore power flow solutions
         system.dae.x[:len(system.PFlow.x_sol)] = system.PFlow.x_sol
         system.dae.y[:len(system.PFlow.y_sol)] = system.PFlow.y_sol
+        system.dae.t -= system.dae.t   # set `dae.t` to zero
 
         # Note:
         #   calling `set_address` on `system.exist.pflow_tds` will point all variables
@@ -347,8 +348,8 @@ class TDS(BaseRoutine):
         if no_summary is False and (system.dae.t == 0):
             self.summary()
 
-        # only initializing at t=0 allows to continue when `run` is called again.
-        if system.dae.t == 0:
+        # only initializing at t<0 allows to continue when `run` is called again.
+        if system.dae.t < 0:
             self.init()
         else:  # resume simulation
             self.init_resume()
