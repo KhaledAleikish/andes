@@ -247,7 +247,7 @@ class Model:
         self.calls = ModelCall()  # callback and LaTeX string storage
         self.triplets = JacTriplet()  # Jacobian triplet storage
         self.syms = SymProcessor(self)  # symbolic processor instance
-        self.docum = Documenter(self)
+        self.docum = Documenter(self)  # documenter instance
 
         # cached class attributes
         self.cache.add_callback('all_vars', self._all_vars)
@@ -285,6 +285,7 @@ class Model:
         self.coeffs = dict()  # pu conversion coefficient storage
         self.bases = dict()   # base storage, such as Vn, Vb, Zn, Zb
         self.debug_equations = list()  # variable names for debugging corresponding equation
+        self.non_top_level = list()  # list of non-top-level components
 
     def _register_attribute(self, key, value):
         """
@@ -346,6 +347,7 @@ class Model:
                 var_instance.name = f'{prepend}{var_name}'
                 var_instance.tex_name = f'{var_instance.tex_name}_{{{tex_append}}}'
                 self.__setattr__(var_instance.name, var_instance)
+                var_instance.not_top_level = True
 
     def _check_attribute(self, key, value):
         """
@@ -506,7 +508,17 @@ class Model:
         uid = self.idx2uid(idx)
         instance = self.__dict__[src]
 
-        instance.__dict__[attr][uid] = value
+        # Check if the destination is a list
+        if isinstance(instance.__dict__[attr], list):
+            # Use a for-loop to set values
+            if isinstance(uid, list):
+                for i, u in enumerate(uid):
+                    instance.__dict__[attr][u] = value[i]
+            else:
+                instance.__dict__[attr][uid] = value
+        else:
+            # Default behavior for numpy arrays or other types
+            instance.__dict__[attr][uid] = value
 
         # update differential equations' time constants stored in `dae.Tf`
 
@@ -524,7 +536,7 @@ class Model:
 
         return True
 
-    def alter(self, src, idx, value):
+    def alter(self, src, idx, value, attr='v'):
         """
         Alter values of input parameters or constant service.
 
@@ -544,17 +556,43 @@ class Model:
             The device to alter
         value : float
             The desired value
+        attr : str
+            The attribute to alter, default is 'v'.
+
+        Notes
+        -----
+        New in version 1.9.3: Added the `attr` parameter and the feature to alter
+        specific attributes. This feature is useful when you need to manipulate parameter
+        values in the system base and ensure that these changes are reflected in the
+        dumped case file.
+
+        Examples
+        --------
+        >>> import andes
+        >>> ss = andes.load(andes.get_case('5bus/pjm5bus.xlsx'), setup=True)
+        >>> ss.GENCLS.alter(src='M', idx=2, value=1, attr='v')
+        >>> ss.GENCLS.get(src='M', idx=2, attr='v')
+        3.0
+        >>> ss.GENCLS.alter(src='M', idx=2, value=1, attr='vin')
+        >>> ss.GENCLS.get(src='M', idx=2, attr='v')
+        1.0
         """
 
         instance = self.__dict__[src]
 
         if hasattr(instance, 'vin') and (instance.vin is not None):
-            self.set(src, idx, 'vin', value)
-
             uid = self.idx2uid(idx)
-            self.set(src, idx, 'v', value * instance.pu_coeff[uid])
-        else:
+            if attr == 'vin':
+                self.set(src, idx, 'vin', value / instance.pu_coeff[uid])
+                self.set(src, idx, 'v', value=value)
+            else:
+                self.set(src, idx, 'vin', value)
+                self.set(src, idx, 'v', value * instance.pu_coeff[uid])
+        elif not hasattr(instance, 'vin') and attr == 'vin':
+            logger.warning(f"{self.class_name}.{src} has no `vin` attribute, changing `v`.")
             self.set(src, idx, 'v', value)
+        else:
+            self.set(src, idx, attr=attr, value=value)
 
     def get_inputs(self, refresh=False):
         """

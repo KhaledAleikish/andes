@@ -71,6 +71,7 @@ class TestGroup(unittest.TestCase):
                                 [6, 7, 8, 1])
 
         # --- find_idx ---
+        # same Model
         self.assertListEqual(ss.DG.find_idx('name', ['PVD1_1', 'PVD1_2']),
                              ss.PVD1.find_idx('name', ['PVD1_1', 'PVD1_2']),
                              )
@@ -82,6 +83,66 @@ class TestGroup(unittest.TestCase):
                                               [('PVD1_1', 'PVD1_2'),
                                                (1.0, 1.0)]))
 
+        # cross Model, given results
+        self.assertListEqual(ss.StaticGen.find_idx(keys='bus',
+                                                   values=[1, 2, 3, 4]),
+                             [1, 2, 3, 6])
+        self.assertListEqual(ss.StaticGen.find_idx(keys='bus',
+                                                   values=[1, 2, 3, 4],
+                                                   allow_all=True),
+                             [[1], [2], [3], [6]])
+
+        self.assertListEqual(ss.StaticGen.find_idx(keys='bus',
+                                                   values=[1, 2, 3, 4, 2024],
+                                                   allow_none=True,
+                                                   default=2011,
+                                                   allow_all=True),
+                             [[1], [2], [3], [6], [2011]])
+
         # --- get_field ---
         ff = ss.DG.get_field('f', list(ss.DG._idx2model.keys()), 'v_code')
         self.assertTrue(any([item == 'y' for item in ff]))
+
+        # --- get group idx ---
+        self.assertSetEqual(set(ss.DG.get_all_idxes()),
+                            set(ss.PVD1.idx.v))
+        self.assertSetEqual(set(ss.StaticGen.get_all_idxes()),
+                            set(ss.PV.idx.v + ss.Slack.idx.v))
+
+
+class TestGroupAdditional(unittest.TestCase):
+    """
+    Test additional group functions.
+    """
+
+    def setUp(self):
+        self.ss = andes.load(
+            andes.get_case('5bus/pjm5bus.xlsx'),
+            setup=True,
+            default_config=True,
+            no_output=True,
+        )
+
+    def test_group_alter(self):
+        """
+        Test `Group.alter` method.
+        """
+
+        # alter `v`
+        self.ss.SynGen.alter(src='M', idx=2, value=1, attr='v')
+        self.assertEqual(self.ss.GENCLS.M.v[1],
+                         1 * self.ss.GENCLS.M.pu_coeff[1])
+
+        # alter `vin`
+        self.ss.SynGen.alter(src='M', idx=2, value=1, attr='vin')
+        self.assertEqual(self.ss.GENCLS.M.v[1], 1)
+
+        # alter `vin` on instances without `vin` falls back to `v`
+        self.ss.SynGen.alter(src='p0', idx=2, value=1, attr='vin')
+        self.assertEqual(self.ss.GENCLS.p0.v[1], 1)
+
+    def test_as_dict(self):
+        """
+        Test `Group.as_dict()`.
+        """
+        self.assertIsInstance(self.ss.SynGen.as_dict(), dict)

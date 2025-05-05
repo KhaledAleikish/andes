@@ -9,6 +9,54 @@ The APIs before v3.0.0 are in beta and may change without prior notice.
 v1.9 Notes
 ==========
 
+v1.9.4 (2025-xx-xx)
+-------------------
+- Enhance ``Model.set()`` to support assigning values when the destination is a
+  list.
+- Fix a bug in line model that causes incorrect admittance matrix.
+- Correct a typo in the PSSE DYR parser, changing "Tprod" to "Tpord".
+
+v1.9.3 (2025-01-05)
+-------------------
+Development of connectivity manager ``ConnMan``:
+
+- Add case ``ieee14_conn.xlsx`` for demonstration.
+- Add ``ConnMan`` class to manage connectivity.
+- Add ``ConnMan`` to `System` to as an attribute ``conn``.
+- Add a demo notebook ``ConnMan.ipynb``. See folder ``andes/examples/demonstration``.
+
+Other changes:
+
+- In the ``dae`` module, change `self.t.itemset` to array assignment to ensure compatibility with NumPy 2.0.
+- Follow RTD's deprecation of Sphinx context injection at build time
+- In symbolic processor, most variables are assumed to be real, except some
+  services that are specified as complex. This will allow generating simplified
+  expressions.
+- Adjust ``BusFreq.Tw.default`` to 0.1.
+- Add parameter from_csv=None in TDS.run() to allow loading data from CSV files at TDS begining.
+- Fix ``TDS.init()`` and ``TDS._csv_step()`` to fit loading from CSV when ``Output`` exists.
+- Add function signature ``allow_all=False`` to ``ModelData.find_idx()`` ``GroupBase.find_idx()``
+  to allow searching all matches.
+- Enhanced three-winding transformer parsing in PSS/E raw files by assigning the equivalent star bus ``area``,
+  ``owner``, and ``zone`` using the high-voltage bus values.
+- Add function signature ``attr='v'`` to method ``Model.alter`` for altering parameter values without manual
+  per unit conversion
+- Add following methods to ``GroupBase`` for easier usage: ``get_all_idxes``, ``alter``, ``as_dict``, and ``as_df``
+- Add two demo ``add_RenGen.ipynb`` and ``replace_SynGen.ipynb`` to show how to do renewable penetration via code.
+  See folder ``andes/examples/demonstration``
+- Add a demo ``manipulate_params.ipynb`` to compare the differnce between ``set`` and ``alter``
+- Extend ``SynGen`` common parameters with ``bus``, ``gen``, ``Sn``, ``Vn``, and ``fn``
+- Extend ``StaticGen`` common parameters with ``bus``
+- Fix ``TDS.init()`` and ``TDS._csv_step()`` to fit loading from CSV when ``Output`` exists.
+- Add parameter ``allow_all=False`` to ``ModelData.find_idx()`` ``GroupBase.find_idx()`` to allow searching all matches.
+- Add method ``GroupBase.get_all_idxes()`` to get all indices of a group.
+- Enhanced three-winding transformer parsing in PSS/E raw files by assigning the equivalent star bus ``area``,
+  ``owner``, and ``zone`` using the high-voltage bus values.
+- Minor fix on model ``TGOV1NDB``
+- Clarification on models ``ACEc`` and ``ACE`` given NERC's definition, as NERC suggesst that both bias and beta
+  should be nevative
+- Minor fixes for finding `dvipng` executable.
+
 v1.9.2 (2024-03-25)
 -------------------
 - Improve PSS/E parser for the `wmod` field in the static generator
