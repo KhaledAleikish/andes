@@ -567,6 +567,88 @@ class System:
 
         return idx
 
+    def remove(self, model, idx):
+        """
+        Remove a device instance from an existing model.
+
+        This method removes the device `idx` from the specified model and its group.
+
+        Parameters
+        ----------
+        model : str
+            Name of the model to remove device from
+        idx : str
+            Index of the device to remove
+
+        Returns
+        -------
+        bool
+            True if device was successfully removed, False otherwise
+
+        Raises
+        ------
+        NotImplementedError
+            When trying to remove devices after system setup
+        """
+        if model not in self.models and (model not in self.model_aliases):
+            logger.warning("<%s> is not an existing model.", model)
+            return False
+
+        if self.is_setup:
+            raise NotImplementedError("Removing devices are not allowed after setup.")
+
+        try:
+            # Get the model instance
+            model_instance = self.__dict__[model]
+            
+            # Check if device exists in the model
+            if idx not in model_instance.uid:
+                logger.warning("Device <%s> not found in model <%s>.", idx, model)
+                return False
+
+            # Get the position of the device
+            pos = model_instance.uid[idx]
+            
+            # Remove from all parameters
+            for param_name, param_instance in model_instance.params.items():
+                if hasattr(param_instance, 'v') and hasattr(param_instance.v, '__len__'):
+                    # Remove the element at position 'pos'
+                    if len(param_instance.v) > pos:
+                        # Create new array without the removed element
+                        new_values = np.concatenate([param_instance.v[:pos], param_instance.v[pos+1:]])
+                        param_instance.v = new_values
+                        
+                        # Update vin if it exists
+                        if hasattr(param_instance, 'vin') and param_instance.vin is not None:
+                            if len(param_instance.vin) > pos:
+                                new_vin = np.concatenate([param_instance.vin[:pos], param_instance.vin[pos+1:]])
+                                param_instance.vin = new_vin
+
+            # Remove from uid dictionary
+            del model_instance.uid[idx]
+            
+            # Update uid values for devices after the removed one
+            for device_idx, device_pos in model_instance.uid.items():
+                if device_pos > pos:
+                    model_instance.uid[device_idx] = device_pos - 1
+            
+            # Decrease the total count
+            model_instance.n -= 1
+            
+            # Remove from group if group exists
+            group_name = model_instance.group
+            if group_name in self.groups:
+                group = self.groups[group_name]
+                if hasattr(group, 'remove'):
+                    group.remove(idx=idx, model=model_instance)
+            
+            logger.debug("Removed device <%s> from model <%s>.", idx, model)
+            return True
+            
+        except Exception as e:
+            logger.error("Failed to remove device <%s> from model <%s>: %s", idx, model, str(e))
+            return False
+
     def find_devices(self):
         """
         Add dependent devices for all model based on `DeviceFinder`.

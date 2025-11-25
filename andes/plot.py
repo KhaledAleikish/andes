@@ -629,7 +629,7 @@ class TDSData:
                   hline1=None, hline2=None, vline1=None, hline=None, vline=None,
                   vline2=None, set_xlim=True, set_ylim=True, autoscale=False, figsize=None,
                   legend_bbox=None, legend_loc=None, legend_ncol=1,
-                  mask=True, color=None, style='default',
+                  mask=True, color=None, style='default', omega_axis=False,
                   **kwargs):
         """
         Plot lines for the supplied data and options.
@@ -729,8 +729,10 @@ class TDSData:
         if ylabel:
             ax.set_ylabel(ylabel)
 
-        ax.ticklabel_format(useOffset=False)
-
+        if omega_axis is True:
+            ax.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
+        else:
+            ax.ticklabel_format(useOffset=False)
         if set_xlim is True:
             ax.set_xlim(left=left, right=right)
         if set_ylim is True:
@@ -751,7 +753,7 @@ class TDSData:
             ax.legend(bbox_to_anchor=legend_bbox,
                       loc=legend_loc,
                       ncol=legend_ncol,
-                      frameon=False,
+                      #frameon=False,
                       )
 
         if title:

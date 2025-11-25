@@ -6,6 +6,7 @@ import logging
 from math import ceil, pi
 from typing import Iterable
 
+import matplotlib.pyplot as plt
 import numpy as np
 import scipy.io
 from scipy.linalg import solve
@@ -785,3 +786,40 @@ class EIG(BaseRoutine):
 
         dump_data(text, header, rowname, data, self.system.files.eig)
         logger.info('Report saved to "%s".', self.system.files.eig)
+
+    def report_df(self, x_name=None, **kwargs):
+        """
+        Returns
+        -------
+        DataFrame:
+        1. Most Associated var. with the eigenvalue
+        2. The damping coefficient, denoted by α (alpha); the real part of eigenvalues
+        3. The imaginary part of eigenvalues
+        4. Damped Freq
+        5. Frequency
+        6. The damping ratio, denoted by ζ (zeta)
+        """
+        if x_name is None:
+            x_name = self.x_name
+
+        n_states = len(self.mu)
+        mu_real = self.mu.real
+        mu_imag = self.mu.imag
+        freq, ufreq, damping, numeral = self.post_process()
+
+        # obtain most associated variables
+        var_assoc = []
+        for prow in range(n_states):
+            temp_row = self.pfactors[prow, :]
+            name_idx = list(temp_row).index(max(temp_row))
+            var_assoc.append(x_name[name_idx])
+
+        stats = [self.n_positive, self.n_zeros, self.n_negative]
+
+        # Create index:
+        index = [item for item in range(1, len(numeral) + 1)]
+
+        columns = ['Most_Associated', 'Real_Part', 'Imaginary_Part', 'Damped_Frequency', 'Frequency', 'Damping_Percentage']
+        data = list(zip(var_assoc, list(mu_real), list(mu_imag), freq, ufreq, damping))
+        import pandas as pd
+        return pd.DataFrame(data, index, columns), stats

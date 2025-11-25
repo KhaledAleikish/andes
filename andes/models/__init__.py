@@ -27,8 +27,10 @@ file_classes = list([
     ('vcomp', ['IEEEVC']),
     ('exciter', ['EXDC2', 'IEEEX1', 'ESDC1A', 'ESDC2A', 'EXST1', 'ESST3A', 'SEXS',
                  'IEEET1', 'EXAC1', 'EXAC2', 'EXAC4', 'ESST4B', 'AC8B', 'IEEET3',
-                 'ESAC1A', 'ESST1A', 'ESAC5A', 'IEEET2']),
-    ('pss', ['IEEEST', 'ST2CUT', 'STAB2A']),
+                 'ESAC1A', 'ESST1A', 'ESST1AV2', 'ESAC5A', 'IEEET2']),
+    ('pss', ['IEEEST', 'ST2CUT', 'STAB2A', 'IEEESTV2'
+        # , 'IEEESTV3'
+             ]),
     ('motor', ['Motor3', 'Motor5']),
     ('measurement', ['BusFreq', 'BusROCOF', 'PMU', 'PLL1', 'PLL2']),
     ('dc', ['Node', 'Ground', 'R', 'L', 'C', 'RCp', 'RCs', 'RLs', 'RLCs', 'RLCp']),
