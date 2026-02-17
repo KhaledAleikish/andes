@@ -425,5 +425,83 @@ class TestCPFQLimits(unittest.TestCase):
                            "CPF with Q limits should still converge")
 
 
+class TestCPFFailurePaths(unittest.TestCase):
+    """Tests that failure paths report failure, not silent success."""
+
+    def _fresh_ss(self):
+        ss = andes.load(andes.get_case('ieee14/ieee14.raw'),
+                        default_config=True)
+        ss.PFlow.run()
+        return ss
+
+    def test_max_steps_returns_false(self):
+        """Max-steps exhaustion must return False and set converged=False.
+
+        Catches the old bug where len(lam) > 1 was the sole success
+        criterion, making max-steps termination look like success.
+        """
+        ss = self._fresh_ss()
+        ss.CPF.config.max_steps = 3
+        result = ss.CPF.run(load_scale=2.0)
+        self.assertFalse(result)
+        self.assertFalse(ss.CPF.converged)
+        self.assertEqual(ss.exit_code, 1)
+
+    def test_state_restored_after_build_targets_error(self):
+        """vcmp limiter and base-case state must be restored even when
+        _build_targets raises ValueError (try/finally guard).
+        """
+        ss = self._fresh_ss()
+        vcmp_orig = ss.PQ.vcmp.enable
+        p0_orig = ss.PQ.p0.v.copy()
+        y_orig = ss.dae.y.copy()
+
+        with self.assertRaises(ValueError):
+            ss.CPF.run(p0_target=[1.0, 2.0])
+
+        self.assertEqual(ss.PQ.vcmp.enable, vcmp_orig,
+                         "vcmp limiter not restored after ValueError")
+        np.testing.assert_allclose(
+            ss.PQ.p0.v, p0_orig,
+            err_msg="PQ.p0.v not restored after ValueError")
+        np.testing.assert_allclose(
+            ss.dae.y, y_orig, atol=1e-10,
+            err_msg="dae.y not restored after ValueError")
+
+    def test_conflicting_inputs_warns(self):
+        """Passing load_scale together with explicit targets logs a warning."""
+        import logging
+
+        ss = self._fresh_ss()
+        with self.assertLogs('andes.routines.cpf', level=logging.WARNING) as cm:
+            ss.CPF.run(load_scale=2.0,
+                       p0_target=ss.PQ.p0.v * 3.0)
+
+        found = any('load_scale' in msg and 'ignored' in msg
+                     for msg in cm.output)
+        self.assertTrue(found, f"Expected warning about ignored targets, "
+                                f"got: {cm.output}")
+
+    def test_corrector_failure_returns_false(self):
+        """Corrector failure on lower branch must return False.
+
+        Uses natural parameterization with tiny step limits to force
+        failure on the lower branch after the nose.
+        """
+        ss = self._fresh_ss()
+        ss.CPF.config.parameterization = 'natural'
+        ss.CPF.config.step_min = 1e-2
+        ss.CPF.config.step_max = 0.1
+        ss.CPF.config.stop_at = 'FULL'
+        ss.CPF.config.max_steps = 200
+        result = ss.CPF.run(load_scale=2.0)
+
+        if 'Corrector failed' in ss.CPF.done_msg:
+            self.assertFalse(result,
+                             "Corrector failure must return False")
+            self.assertFalse(ss.CPF.converged)
+            self.assertEqual(ss.exit_code, 1)
+
+
 if __name__ == '__main__':
     unittest.main()

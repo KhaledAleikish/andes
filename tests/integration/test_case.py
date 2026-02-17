@@ -460,7 +460,6 @@ class TestDAECompaction(unittest.TestCase):
             default_config=True,
             no_output=True,
         )
-        ss.setup()
         ss.PFlow.run()
 
         ss.TDS.config.tf = 0.1
@@ -490,7 +489,6 @@ class TestDAECompaction(unittest.TestCase):
             default_config=True,
             no_output=True,
         )
-        ss.setup()
         ss.PFlow.run()
 
         # disable GENCLS[0] and its TG2[0] so PV idx=0 is NOT replaced

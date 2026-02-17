@@ -459,7 +459,6 @@ class TestToggleSetStatus(unittest.TestCase):
             default_config=True,
             no_output=True,
         )
-        ss.setup()
 
         line_idx = ss.Line.idx.v[0]
         line_uid = 0
@@ -477,7 +476,6 @@ class TestToggleSetStatus(unittest.TestCase):
             default_config=True,
             no_output=True,
         )
-        ss.setup()
 
         line_idx = ss.Line.idx.v[0]
         line_uid = 0

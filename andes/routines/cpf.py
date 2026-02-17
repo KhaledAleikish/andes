@@ -31,7 +31,7 @@ class NaturalParam:
 
     def jacobian(self, xy, lam, xy_prev, lam_prev, z, nm):
         dP_row = spmatrix([], [], [], (1, nm), 'd')
-        dP_dlam = 1.0 if lam >= lam_prev else -1.0
+        dP_dlam = 1.0
         return dP_row, dP_dlam
 
 
@@ -244,11 +244,11 @@ class CPF(BaseRoutine):
         t0, _ = elapsed()
 
         self._snapshot_base()
-        self._build_targets(load_scale, p0_target, q0_target, pg_target)
-
-        success = self._continuation()
-
-        self._restore_base()
+        try:
+            self._build_targets(load_scale, p0_target, q0_target, pg_target)
+            success = self._continuation()
+        finally:
+            self._restore_base()
 
         t1, s1 = elapsed(t0)
         self.exec_time = t1 - t0
@@ -339,6 +339,8 @@ class CPF(BaseRoutine):
         system = self.system
 
         if load_scale is not None:
+            if any(x is not None for x in (p0_target, q0_target, pg_target)):
+                logger.warning("load_scale is set; p0_target/q0_target/pg_target will be ignored.")
             self._p0_target = self._p0_base * load_scale
             self._q0_target = self._q0_base * load_scale
             self._pg_target = self._pg_base * load_scale
@@ -432,6 +434,7 @@ class CPF(BaseRoutine):
         step = self.config.step
         fail_count = 0
         nose_detected = False
+        self._failed = False
 
         # initial tangent (seed with pure lambda direction, then refine)
         z = np.zeros(nm + 1)
@@ -475,12 +478,18 @@ class CPF(BaseRoutine):
 
                 if step < self.config.step_min or fail_count > 10:
                     if not nose_detected:
-                        # ---- branch switch ----
                         nose_detected = True
                         self.events.append({
                             'step': k + 1, 'type': 'NOSE',
                             'msg': f'Nose point at lambda={lam:.6f}'
                         })
+
+                        if stop_at_mode == 'NOSE':
+                            self.done_msg = (f'Nose point at '
+                                             f'lambda={lam:.6f}')
+                            break
+
+                        # ---- branch switch ----
                         self.events.append({
                             'step': k + 1, 'type': 'BRANCH_SWITCH',
                             'msg': f'Branch switch at lambda={lam:.6f}'
@@ -491,6 +500,7 @@ class CPF(BaseRoutine):
                         step = self.config.step
                         fail_count = 0
                     else:
+                        self._failed = True
                         self.done_msg = (f'Corrector failed at '
                                          f'lambda={lam:.6f}')
                         logger.info("Corrector failed on lower branch. "
@@ -557,12 +567,17 @@ class CPF(BaseRoutine):
                         lam_list[-1] = lam
                         V_list[-1] = self._bus_vmag().copy()
                         theta_list[-1] = self._bus_angle().copy()
-
-                    self.done_msg = 'Full curve traced (returned to lambda=0)'
-                    self.events.append({
-                        'step': k + 1, 'type': 'TARGET_LAM',
-                        'msg': self.done_msg
-                    })
+                        self.done_msg = 'Full curve traced (returned to lambda=0)'
+                        self.events.append({
+                            'step': k + 1, 'type': 'TARGET_LAM',
+                            'msg': self.done_msg
+                        })
+                    else:
+                        self._failed = True
+                        self.done_msg = (
+                            f'Full curve traced but refinement to lambda=0 '
+                            f'failed; last lambda={lam:.6f}')
+                        logger.warning(self.done_msg)
                     break
 
             # ---- target lambda crossing ----
@@ -580,13 +595,18 @@ class CPF(BaseRoutine):
                             lam_list[-1] = lam
                             V_list[-1] = self._bus_vmag().copy()
                             theta_list[-1] = self._bus_angle().copy()
-
-                        self.done_msg = (f'Reached target '
-                                         f'lambda={stop_at_lam}')
-                        self.events.append({
-                            'step': k + 1, 'type': 'TARGET_LAM',
-                            'msg': self.done_msg
-                        })
+                            self.done_msg = (f'Reached target '
+                                             f'lambda={stop_at_lam}')
+                            self.events.append({
+                                'step': k + 1, 'type': 'TARGET_LAM',
+                                'msg': self.done_msg
+                            })
+                        else:
+                            self._failed = True
+                            self.done_msg = (
+                                f'Crossed target lambda={stop_at_lam} but '
+                                f'refinement failed; last lambda={lam:.6f}')
+                            logger.warning(self.done_msg)
                         break
 
             # ---- compute new tangent ----
@@ -615,6 +635,7 @@ class CPF(BaseRoutine):
                 step = min(step, self.config.step_max)
 
         else:
+            self._failed = True
             self.done_msg = f'Reached max steps ({self.config.max_steps})'
 
         # ---- finalize ----
@@ -625,7 +646,7 @@ class CPF(BaseRoutine):
         self.steps = np.array(step_list)
         self.max_lam = (float(np.max(self.lam)) if len(self.lam) > 0
                         else 0.0)
-        self.converged = len(self.lam) > 1
+        self.converged = len(self.lam) > 1 and not self._failed
 
         if self.config.report:
             self.report()

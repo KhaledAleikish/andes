@@ -94,7 +94,6 @@ class TestCacheTDS(unittest.TestCase):
         """
         ss = andes.load(andes.get_case('ieee14/ieee14_linetrip.xlsx'),
                         no_output=True, default_config=True)
-        ss.setup()
 
         self.assertTrue(ss.PFlow.run(), "PFlow did not converge")
 
