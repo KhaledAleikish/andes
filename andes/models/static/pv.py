@@ -166,6 +166,10 @@ class PV(PVData, PVModel):
     If `pv2pq` is `1` (enabled) and `npv2pq` is `0`, heuristics
     will be used to determine the number of PVs to be converted
     for each iteration.
+
+    This conversion also applies during Continuation Power Flow (CPF).
+    Pass ``config_option=["PV.pv2pq=1"]`` to ``andes.load()`` to
+    enforce reactive power limits along the nose curve.
     """
 
     def __init__(self, system=None, config=None):

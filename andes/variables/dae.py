@@ -669,29 +669,37 @@ class DAE:
             else:
                 raise NotImplementedError("Does not know how to shrink arrays")
 
+    @staticmethod
+    def _readonly(arr):
+        """Return a read-only view so accidental writes raise ValueError."""
+        arr.flags.writeable = False
+        return arr
+
     @property
     def xy(self):
         """
-        Return a concatenated array of [x, y].
+        Return a read-only concatenated array of [x, y].
+
+        To modify state, write ``dae.x`` and ``dae.y`` directly.
         """
 
-        return np.hstack((self.x, self.y))
+        return self._readonly(np.hstack((self.x, self.y)))
 
     @property
     def xyz(self):
         """
-        Return a concatenated array of [x, y].
+        Return a read-only concatenated array of [x, y, z].
         """
 
-        return np.hstack((self.x, self.y, self.z))
+        return self._readonly(np.hstack((self.x, self.y, self.z)))
 
     @property
     def fg(self):
         """
-        Return a concatenated array of [f, g].
+        Return a read-only concatenated array of [f, g].
         """
 
-        return np.hstack((self.f, self.g))
+        return self._readonly(np.hstack((self.f, self.g)))
 
     @property
     def x_name_output(self):
