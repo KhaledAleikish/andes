@@ -211,6 +211,6 @@ Learning Paths
 
    .. grid-item-card:: Model Developer
 
-      1. :doc:`tutorials/inspecting-models`
+      1. :doc:`tutorials/14-inspecting-models`
       2. :doc:`modeling/concepts/framework-overview`
       3. :doc:`modeling/creating-models/index`

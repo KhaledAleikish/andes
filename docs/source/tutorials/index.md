@@ -42,5 +42,6 @@ For creating custom device models, see the {doc}`../modeling/index` section afte
 10-dynamic-control
 11-frequency-response
 12-state-estimation
-inspecting-models
+13-continuation-power-flow
+14-inspecting-models
 ```
