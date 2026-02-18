@@ -27,7 +27,7 @@ class FileMan:
         """
         self.input_format = None
         self.output_format = None
-        self.add_format = None
+        self.add_format = []
 
         self.case = None
         self.input_path = ''
@@ -35,7 +35,7 @@ class FileMan:
         self.fullname = None
         self.name = None
         self.ext = None
-        self.addfile = None
+        self.addfile = []
         self.pert = None
         self.output_path = None
         self.no_output = True
@@ -49,9 +49,9 @@ class FileMan:
         """
         self.case = case
         input_format = kwargs.get('input_format')
-        add_format = kwargs.get('add_format')
+        add_format = kwargs.get('add_format', [])
         input_path = kwargs.get('input_path')
-        addfile = kwargs.get('addfile')
+        addfile = kwargs.get('addfile') or []
         no_output = kwargs.get('no_output')
         output_path = kwargs.get('output_path')
         output = kwargs.get('output')  # base file name for the output
@@ -66,7 +66,7 @@ class FileMan:
             return
 
         self.input_format = input_format
-        self.add_format = add_format
+        self.add_format = add_format if isinstance(add_format, list) else [add_format]
         self.input_path = input_path if input_path is not None else ''
         self.output_path = output_path if output_path is not None else ''
 
@@ -80,7 +80,9 @@ class FileMan:
         # `self.name` is the name part without extension
         self.name, self.ext = os.path.splitext(self.fullname)
 
-        self.addfile = self.get_fullpath(addfile)
+        if isinstance(addfile, str):
+            addfile = [addfile]
+        self.addfile = [self.get_fullpath(f) for f in addfile]
         self.pert = self.get_fullpath(pert)
         if dump is None:
             dump = self.name

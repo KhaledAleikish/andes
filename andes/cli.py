@@ -72,7 +72,9 @@ def create_parser():
     run.add_argument(
         "-p", "--input-path", help="Path to case files", type=str, default=""
     )
-    run.add_argument("-a", "--addfile", help="Additional files used by some formats.")
+    run.add_argument("-a", "--addfile",
+                     help="Additional files used by some formats.",
+                     action="append", default=None)
     run.add_argument("-P", "--pert", help="Perturbation file path", default="")
     run.add_argument(
         "-o", "--output-path", help="Output path prefix", type=str, default=""

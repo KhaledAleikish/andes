@@ -84,6 +84,14 @@ Refactoring:
 - Rewrite TDS init error diagnostics with limit clamping report and DAE
   reverse map.
 
+I/O and file loading:
+
+- Extend ``--addfile`` (``-a``) to accept multiple files and support cross-format
+  loading. Any supported format (xlsx, json, matpower) can be used as an
+  additional file on top of any base case format. The ``-a`` flag can be
+  repeated on the command line (e.g., ``-a f1.dyr -a f2.xlsx``), and the
+  Python API accepts both a string and a list.
+
 API improvements:
 
 - Consolidate ``set()`` and ``alter()`` into a unified ``set()`` method with a
