@@ -235,5 +235,47 @@ class TestStaticEvaluator(unittest.TestCase):
         np.testing.assert_allclose(H[:, nb:], np.eye(nb), atol=1e-10)
 
 
+class TestBuildYbus(unittest.TestCase):
+    """Tests for the flags.ybus protocol and System.build_ybus()."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ss = andes.load(andes.get_case('ieee14/ieee14.raw'),
+                            default_config=True)
+        cls.ss.PFlow.run()
+
+    def test_discover_line_and_shunt(self):
+        """Models with flags.ybus=True must appear in exist.ybus."""
+        self.assertIn('Line', self.ss.exist.ybus)
+        self.assertIn('Shunt', self.ss.exist.ybus)
+
+    def test_protocol_contract(self):
+        """Every model in exist.ybus must implement callable build_ybus()."""
+        for name, mdl in self.ss.exist.ybus.items():
+            self.assertTrue(
+                callable(getattr(mdl, 'build_ybus', None)),
+                f"{name} has flags.ybus=True but no callable build_ybus()",
+            )
+
+    def test_numeric_correctness(self):
+        """system.build_ybus() must match manual line+shunt construction."""
+        from andes.linsolvers.scipy import spmatrix_to_csc
+        ss = self.ss
+
+        Y_sys = spmatrix_to_csc(ss.build_ybus()).toarray()
+
+        # Manual reference: line contribution only
+        Y_ref = spmatrix_to_csc(ss.Line.build_ybus()).toarray()
+        # Add shunt contributions
+        shunt = ss.Shunt
+        for i in range(shunt.n):
+            if shunt.u.v[i] == 0:
+                continue
+            uid = ss.Bus.idx2uid(shunt.bus.v[i])
+            Y_ref[uid, uid] += complex(shunt.g.v[i], shunt.b.v[i])
+
+        np.testing.assert_allclose(Y_sys, Y_ref, atol=1e-12)
+
+
 if __name__ == '__main__':
     unittest.main()

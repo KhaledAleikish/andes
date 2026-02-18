@@ -1055,6 +1055,12 @@ class System:
         -------
         spmatrix
             Bus admittance matrix (sparse, complex).
+
+        Notes
+        -----
+        Uses ``exist.ybus``, populated once during ``setup()``.
+        Device status changes after setup are reflected via ``u.v``
+        at call time, but the set of contributing models is fixed.
         """
         nb = self.Bus.n
         Y = spmatrix([], [], [], (nb, nb), 'z')

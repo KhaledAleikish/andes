@@ -2,6 +2,8 @@
 AC transmission line and two-winding transformer line.
 """
 
+import warnings
+
 import numpy as np
 
 from andes.core import (ModelData, IdxParam, NumParam, DataParam,
@@ -280,7 +282,6 @@ class Line(LineData, Model):
         """
         Deprecated. Use :meth:`build_ybus` or :meth:`System.build_ybus` instead.
         """
-        import warnings
         warnings.warn(
             "Line.build_y() is deprecated and will be removed in v3.0. "
             "Use system.build_ybus() or Line.build_ybus() instead.",

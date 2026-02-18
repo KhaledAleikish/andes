@@ -11,6 +11,7 @@ from andes.core import NumParam, ConstService
 from andes.core.discrete import ShuntAdjust
 from andes.core.service import SwBlock
 from andes.models.shunt.shunt import ShuntData, ShuntModel
+from andes.shared import spmatrix
 
 
 class ShuntSwData(ShuntData):
@@ -129,6 +130,12 @@ class ShuntSwModel(ShuntModel):
 
         self.a.e_str = 'ue * v**2 * geff'
         self.v.e_str = '-ue * v**2 * beff'
+
+    def build_ybus(self):
+        """Return switched-shunt admittance using effective g/b values."""
+        nb = self.system.Bus.n
+        y = self.u.v * (self.geff.v + 1j * self.beff.v)
+        return spmatrix(y, self.a.a, self.a.a, (nb, nb), 'z')
 
 
 class ShuntSw(ShuntSwData, ShuntSwModel):
