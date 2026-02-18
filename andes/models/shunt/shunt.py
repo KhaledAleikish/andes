@@ -3,6 +3,7 @@ Phasor-domain shunt compensator model.
 """
 
 from andes.core import ModelData, IdxParam, NumParam, Model, ExtAlgeb
+from andes.shared import spmatrix
 
 
 class ShuntData(ModelData):
@@ -30,6 +31,7 @@ class ShuntModel(Model):
         self.group = 'StaticShunt'
         self.flags.pflow = True
         self.flags.tds = True
+        self.flags.ybus = True
 
         self.a = ExtAlgeb(model='Bus', src='a', indexer=self.bus, tex_name=r'\theta',
                           ename='P',
@@ -42,6 +44,12 @@ class ShuntModel(Model):
 
         self.a.e_str = 'ue * v**2 * g'
         self.v.e_str = '-ue * v**2 * b'
+
+    def build_ybus(self):
+        """Return shunt admittance contribution to Y-bus as a sparse matrix."""
+        nb = self.system.Bus.n
+        y = self.u.v * (self.g.v + 1j * self.b.v)
+        return spmatrix(y, self.a.a, self.a.a, (nb, nb), 'z')
 
 
 class Shunt(ShuntData, ShuntModel):

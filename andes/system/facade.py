@@ -41,6 +41,7 @@ class ExistingModels:
         self.pflow = OrderedDict()
         self.tds = OrderedDict()   # if a model needs to be initialized before TDS, set `flags.tds = True`
         self.pflow_tds = OrderedDict()
+        self.ybus = OrderedDict()
 
 
 class System:
@@ -308,6 +309,7 @@ class System:
         self.exist.pflow = self.find_models('pflow')
         self.exist.tds = self.find_models('tds')
         self.exist.pflow_tds = self.find_models(('tds', 'pflow'))
+        self.exist.ybus = self.find_models('ybus')
 
     def reset(self, force=False):
         """
@@ -1039,6 +1041,26 @@ class System:
         for var in self._getters['x']:
             if var.n > 0:
                 var.v[:] = self.dae.x[var.a]
+
+    def build_ybus(self):
+        """
+        Build bus admittance matrix by aggregating contributions from all
+        models with ``flags.ybus == True``.
+
+        Each contributing model must implement a ``build_ybus()`` method
+        returning a kvxopt ``spmatrix`` of size ``(nb, nb)`` with
+        typecode ``'z'``.
+
+        Returns
+        -------
+        spmatrix
+            Bus admittance matrix (sparse, complex).
+        """
+        nb = self.Bus.n
+        Y = spmatrix([], [], [], (nb, nb), 'z')
+        for mdl in self.exist.ybus.values():
+            Y += mdl.build_ybus()
+        return Y
 
     def connectivity(self, info=True):
         """

@@ -34,6 +34,11 @@ class ModelFlags:
         True if the model's status affects network topology.
         Models with this flag cause ``ConnMan`` to be invalidated
         when their effective status changes.
+    ybus : bool
+        True if the model contributes to the bus admittance matrix.
+        Models with this flag must implement a ``build_ybus()`` method
+        returning a kvxopt ``spmatrix`` of size ``(nb, nb)`` with
+        typecode ``'z'``.
     nr_iter : bool
         True if is series device
     f_num : bool
@@ -52,7 +57,7 @@ class ModelFlags:
 
     def __init__(self, collate=False, pflow=False, tds=False,
                  pflow_init=None, tds_init=None, series=False,
-                 topo=False,
+                 topo=False, ybus=False,
                  nr_iter=False, f_num=False, g_num=False, j_num=False,
                  s_num=False, sv_num=False):
 
@@ -63,6 +68,7 @@ class ModelFlags:
         self.tds_init = tds_init
         self.series = series
         self.topo = topo
+        self.ybus = ybus
         self.nr_iter = nr_iter
         self.f_num = f_num
         self.g_num = g_num

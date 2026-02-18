@@ -222,17 +222,8 @@ class StaticEvaluator:
         self.meas = measurements
         self.nb = system.Bus.n
 
-        # Dense Y-bus: reuse Line.build_y(), convert via existing infrastructure
-        self.Y = spmatrix_to_csc(system.Line.build_y()).toarray()
-
-        # Add shunt admittances
-        if hasattr(system, 'Shunt') and system.Shunt.n > 0:
-            shunt = system.Shunt
-            for i in range(shunt.n):
-                if shunt.u.v[i] == 0:
-                    continue
-                uid = system.Bus.idx2uid(shunt.bus.v[i])
-                self.Y[uid, uid] += complex(shunt.g.v[i], shunt.b.v[i])
+        # Sparse Y-bus from system-level aggregation (Line + Shunt + ...)
+        self.Y = spmatrix_to_csc(system.build_ybus())
 
         # Precompute per-line parameters as vectorized arrays (all lines)
         line = system.Line

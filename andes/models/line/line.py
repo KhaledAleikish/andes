@@ -150,6 +150,7 @@ class Line(LineData, Model):
         self.flags.pflow = True
         self.flags.tds = True
         self.flags.topo = True
+        self.flags.ybus = True
 
         self.a1 = ExtAlgeb(model='Bus', src='a', indexer=self.bus1, tex_name='a_1',
                            info='phase angle of the from bus',
@@ -245,14 +246,16 @@ class Line(LineData, Model):
 
         return np.array(self.idx.v)[self.istf]
 
-    def build_y(self):
+    def build_ybus(self):
         """
-        Build bus admittance matrix. Store the matrix in ``self.Y``.
+        Build line contribution to the bus admittance matrix.
+
+        Store the result in ``self.Y`` and return it.
 
         Returns
         -------
         Y : spmatrix
-            Bus admittance matrix.
+            Line admittance contribution (sparse, complex).
         """
 
         nb = self.system.Bus.n
@@ -272,6 +275,18 @@ class Line(LineData, Model):
         self.Y += spmatrix(y12 + y2 + ysh, self.a2.a, self.a2.a, (nb, nb), 'z')
 
         return self.Y
+
+    def build_y(self):
+        """
+        Deprecated. Use :meth:`build_ybus` or :meth:`System.build_ybus` instead.
+        """
+        import warnings
+        warnings.warn(
+            "Line.build_y() is deprecated and will be removed in v3.0. "
+            "Use system.build_ybus() or Line.build_ybus() instead.",
+            DeprecationWarning, stacklevel=2,
+        )
+        return self.build_ybus()
 
     def build_b(self, method='fdpf'):
         """
