@@ -60,6 +60,7 @@ dev = [
     "myst-parser>=0.15",
     "myst-nb>=0.13",
     "mdit-py-plugins>=0.3.1,<0.4",
+    "plotly",
     "pre-commit",
 ]
 doc = [
@@ -72,6 +73,7 @@ doc = [
     "myst-parser>=0.15",
     "myst-nb>=0.13",
     "mdit-py-plugins>=0.3.1,<0.4",
+    "plotly",
 ]
 interop = [
     "pandapower>=3,<=3.4",

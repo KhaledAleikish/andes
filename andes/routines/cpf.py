@@ -54,7 +54,7 @@ class ArcLengthParam:
 
 
 class PseudoArcLengthParam:
-    """P = z'*dx + z_lam*dlam - step.  Most robust at nose."""
+    r"""P = z' \* dx + z_lam \* dlam - step.  Most robust at nose."""
 
     def constraint(self, xy, lam, xy_prev, lam_prev, step, z, nm):
         dxy = xy - xy_prev
