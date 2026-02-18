@@ -6,6 +6,8 @@ import logging
 
 import numpy as np
 
+from andes.linsolvers.scipy import spmatrix_to_csc
+
 logger = logging.getLogger(__name__)
 
 
@@ -35,7 +37,7 @@ class Measurements:
     def __init__(self, system):
         self.system = system
 
-        # Parallel lists — one entry per scalar measurement
+        # Parallel lists -- one entry per scalar measurement
         self._models = []      # str model name
         self._vars = []        # str variable name
         self._idx = []         # device idx within that model
@@ -48,7 +50,7 @@ class Measurements:
         self._finalized = False
 
     # ------------------------------------------------------------------
-    #  Validation helpers
+    #  Helpers
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -57,6 +59,22 @@ class Measurements:
         arr = np.atleast_1d(np.asarray(sigma, dtype=float))
         if np.any(arr <= 0):
             raise ValueError(f"{name} must be positive.")
+
+    def _resolve_idx(self, model, idx):
+        """Normalize idx: None -> all devices, scalar -> [scalar], else list."""
+        if idx is None:
+            return list(getattr(self.system, model).idx.v)
+        if not hasattr(idx, '__len__'):
+            return [idx]
+        return list(idx)
+
+    def _append(self, model, var, idx, sigma, kind):
+        """Append a single scalar measurement."""
+        self._models.append(model)
+        self._vars.append(var)
+        self._idx.append(idx)
+        self._sigma.append(float(sigma))
+        self._kind.append(kind)
 
     # ------------------------------------------------------------------
     #  Core add method
@@ -93,22 +111,12 @@ class Measurements:
                 f"StaticEvaluator. Supported: {self._SUPPORTED_DIRECT}."
             )
 
-        if idx is None:
-            idx = list(mdl.idx.v)
-        elif not hasattr(idx, '__len__'):
-            idx = [idx]
-        else:
-            idx = list(idx)
-
-        sigma_arr = np.broadcast_to(np.asarray(sigma, dtype=float), (len(idx),))
+        idx_list = self._resolve_idx(model, idx)
+        sigma_arr = np.broadcast_to(np.asarray(sigma, dtype=float), (len(idx_list),))
         self._check_sigma(sigma_arr)
 
-        for i, dev_idx in enumerate(idx):
-            self._models.append(model)
-            self._vars.append(var)
-            self._idx.append(dev_idx)
-            self._sigma.append(float(sigma_arr[i]))
-            self._kind.append('direct')
+        for i, dev_idx in enumerate(idx_list):
+            self._append(model, var, dev_idx, sigma_arr[i], 'direct')
 
         self._finalized = False
 
@@ -124,65 +132,26 @@ class Measurements:
         """Add bus voltage angle measurements (PMU)."""
         self.add('Bus', 'a', idx=bus_idx, sigma=sigma)
 
+    def _add_paired(self, model, idx, p_var, q_var, sigma_p, sigma_q):
+        """Add paired active/reactive measurements for each device."""
+        self._check_sigma(sigma_p, 'sigma_p')
+        self._check_sigma(sigma_q, 'sigma_q')
+        for dev_idx in self._resolve_idx(model, idx):
+            self._append(model, p_var, dev_idx, float(sigma_p), p_var)
+            self._append(model, q_var, dev_idx, float(sigma_q), q_var)
+        self._finalized = False
+
     def add_bus_injection(self, bus_idx=None, sigma_p=0.02, sigma_q=0.03):
         """Add active and reactive power injection measurements.
 
         These are 'computed' measurements evaluated via Y-bus formulas,
         not direct DAE variable lookups.
         """
-        self._check_sigma(sigma_p, 'sigma_p')
-        self._check_sigma(sigma_q, 'sigma_q')
-
-        bus = self.system.Bus
-        if bus_idx is None:
-            bus_idx = list(bus.idx.v)
-        elif not hasattr(bus_idx, '__len__'):
-            bus_idx = [bus_idx]
-        else:
-            bus_idx = list(bus_idx)
-
-        for bidx in bus_idx:
-            self._models.append('Bus')
-            self._vars.append('p_inj')
-            self._idx.append(bidx)
-            self._sigma.append(float(sigma_p))
-            self._kind.append('p_inj')
-
-            self._models.append('Bus')
-            self._vars.append('q_inj')
-            self._idx.append(bidx)
-            self._sigma.append(float(sigma_q))
-            self._kind.append('q_inj')
-
-        self._finalized = False
+        self._add_paired('Bus', bus_idx, 'p_inj', 'q_inj', sigma_p, sigma_q)
 
     def add_line_flow(self, line_idx=None, sigma_p=0.02, sigma_q=0.03):
         """Add active and reactive power flow measurements (from-end)."""
-        self._check_sigma(sigma_p, 'sigma_p')
-        self._check_sigma(sigma_q, 'sigma_q')
-
-        line = self.system.Line
-        if line_idx is None:
-            line_idx = list(line.idx.v)
-        elif not hasattr(line_idx, '__len__'):
-            line_idx = [line_idx]
-        else:
-            line_idx = list(line_idx)
-
-        for lidx in line_idx:
-            self._models.append('Line')
-            self._vars.append('p_flow')
-            self._idx.append(lidx)
-            self._sigma.append(float(sigma_p))
-            self._kind.append('p_flow')
-
-            self._models.append('Line')
-            self._vars.append('q_flow')
-            self._idx.append(lidx)
-            self._sigma.append(float(sigma_q))
-            self._kind.append('q_flow')
-
-        self._finalized = False
+        self._add_paired('Line', line_idx, 'p_flow', 'q_flow', sigma_p, sigma_q)
 
     # ------------------------------------------------------------------
     #  Finalize and generate values
@@ -221,14 +190,12 @@ class Measurements:
 
         rng = np.random.default_rng(seed)
 
-        # Build evaluator to compute h(x_true)
         evaluator = StaticEvaluator(self.system, self)
-        theta_true = np.array(self.system.Bus.a.v, dtype=float)
-        Vm_true = np.array(self.system.Bus.v.v, dtype=float)
-        h_true = evaluator.h(theta_true, Vm_true)
-
-        noise = noise_func(self.sigma, self.nm, rng)
-        self.z = h_true + noise
+        h_true = evaluator.h(
+            np.array(self.system.Bus.a.v, dtype=float),
+            np.array(self.system.Bus.v.v, dtype=float),
+        )
+        self.z = h_true + noise_func(self.sigma, self.nm, rng)
 
     @property
     def nm(self):
@@ -255,76 +222,67 @@ class StaticEvaluator:
         self.meas = measurements
         self.nb = system.Bus.n
 
-        # Build Y-bus and convert to dense numpy
-        Y_sparse = system.Line.build_y()
-        self.Y = np.zeros((self.nb, self.nb), dtype=complex)
-        # Extract triplets from kvxopt spmatrix
-        _triplets = Y_sparse.CCS
-        col_ptr, row_idx, vals = _triplets
-        for col in range(self.nb):
-            for k in range(col_ptr[col], col_ptr[col + 1]):
-                r = row_idx[k]
-                self.Y[r, col] = complex(vals[k])
+        # Dense Y-bus: reuse Line.build_y(), convert via existing infrastructure
+        self.Y = spmatrix_to_csc(system.Line.build_y()).toarray()
 
-        # Add shunt admittances from Shunt model if present
+        # Add shunt admittances
         if hasattr(system, 'Shunt') and system.Shunt.n > 0:
             shunt = system.Shunt
             for i in range(shunt.n):
                 if shunt.u.v[i] == 0:
                     continue
-                bus_uid = system.Bus.idx2uid(shunt.bus.v[i])
-                self.Y[bus_uid, bus_uid] += complex(shunt.g.v[i], shunt.b.v[i])
+                uid = system.Bus.idx2uid(shunt.bus.v[i])
+                self.Y[uid, uid] += complex(shunt.g.v[i], shunt.b.v[i])
 
-        # Build bus idx → uid map
-        self._bus_idx2uid = {}
-        for uid, idx in enumerate(system.Bus.idx.v):
-            self._bus_idx2uid[idx] = uid
-
-        # Build line idx → (from_uid, to_uid, y_series, y_sh, tap, phi) map
-        self._line_params = {}
+        # Precompute per-line parameters as vectorized arrays (all lines)
         line = system.Line
-        for i in range(line.n):
-            lidx = line.idx.v[i]
-            from_uid = self._bus_idx2uid[line.bus1.v[i]]
-            to_uid = self._bus_idx2uid[line.bus2.v[i]]
-            y_series = line.u.v[i] / complex(line.r.v[i], line.x.v[i])
-            y_sh = line.u.v[i] * complex(line.g.v[i], line.b.v[i]) / 2
-            y1 = line.u.v[i] * complex(line.g1.v[i], line.b1.v[i])
-            y2 = line.u.v[i] * complex(line.g2.v[i], line.b2.v[i])
-            tap = line.tap.v[i]
-            phi = line.phi.v[i]
-            self._line_params[lidx] = (from_uid, to_uid, y_series, y_sh, y1, y2, tap, phi)
+        bus = system.Bus
+        self._from_uid = np.array(bus.idx2uid(list(line.bus1.v)))
+        self._to_uid = np.array(bus.idx2uid(list(line.bus2.v)))
+        self._ys = line.u.v / (line.r.v + 1j * line.x.v)
+        self._ysh = line.u.v * (line.g.v + 1j * line.b.v) / 2
+        self._y1 = line.u.v * (line.g1.v + 1j * line.b1.v)
+        self._tap = np.array(line.tap.v, dtype=float)
+        self._phi = np.array(line.phi.v, dtype=float)
 
-        # Pre-classify measurements by kind for fast evaluation
-        self._direct_v_uid = []     # (meas_pos, bus_uid) for v_mag
-        self._direct_a_uid = []     # (meas_pos, bus_uid) for v_ang
-        self._pinj_uid = []         # (meas_pos, bus_uid) for p_inj
-        self._qinj_uid = []         # (meas_pos, bus_uid) for q_inj
-        self._pflow_params = []     # (meas_pos, line_param_tuple)
-        self._qflow_params = []     # (meas_pos, line_param_tuple)
+        # Classify measurements into numpy index arrays
+        self._classify(measurements, bus, line)
 
-        meas = measurements
+    def _classify(self, meas, bus, line):
+        """Build numpy index arrays for each measurement type."""
+        groups = {'v': ([], []), 'a': ([], []),
+                  'p_inj': ([], []), 'q_inj': ([], []),
+                  'p_flow': ([], []), 'q_flow': ([], [])}
+
         for i in range(meas.nm):
             kind = meas._kind[i]
+            idx = meas._idx[i]
             if kind == 'direct':
-                if meas._models[i] == 'Bus' and meas._vars[i] == 'v':
-                    uid = self._bus_idx2uid[meas._idx[i]]
-                    self._direct_v_uid.append((i, uid))
-                elif meas._models[i] == 'Bus' and meas._vars[i] == 'a':
-                    uid = self._bus_idx2uid[meas._idx[i]]
-                    self._direct_a_uid.append((i, uid))
-            elif kind == 'p_inj':
-                uid = self._bus_idx2uid[meas._idx[i]]
-                self._pinj_uid.append((i, uid))
-            elif kind == 'q_inj':
-                uid = self._bus_idx2uid[meas._idx[i]]
-                self._qinj_uid.append((i, uid))
-            elif kind == 'p_flow':
-                params = self._line_params[meas._idx[i]]
-                self._pflow_params.append((i, params))
-            elif kind == 'q_flow':
-                params = self._line_params[meas._idx[i]]
-                self._qflow_params.append((i, params))
+                key = meas._vars[i]  # 'v' or 'a'
+                groups[key][0].append(i)
+                groups[key][1].append(bus.idx2uid(idx))
+            elif kind in ('p_inj', 'q_inj'):
+                groups[kind][0].append(i)
+                groups[kind][1].append(bus.idx2uid(idx))
+            elif kind in ('p_flow', 'q_flow'):
+                groups[kind][0].append(i)
+                groups[kind][1].append(line.idx2uid(idx))
+
+        self._v_pos, self._v_uid = (np.array(v, dtype=int) for v in groups['v'])
+        self._a_pos, self._a_uid = (np.array(v, dtype=int) for v in groups['a'])
+        self._pi_pos, self._pi_uid = (np.array(v, dtype=int) for v in groups['p_inj'])
+        self._qi_pos, self._qi_uid = (np.array(v, dtype=int) for v in groups['q_inj'])
+        self._pf_pos, self._pf_luid = (np.array(v, dtype=int) for v in groups['p_flow'])
+        self._qf_pos, self._qf_luid = (np.array(v, dtype=int) for v in groups['q_flow'])
+
+    def _line_S_from(self, V):
+        """Compute from-end apparent power for all lines (vectorized)."""
+        Vf = V[self._from_uid]
+        Vt = V[self._to_uid]
+        m = self._tap * np.exp(1j * self._phi)
+        tap2 = self._tap ** 2
+        I_ij = (Vf / tap2 - Vt / np.conj(m)) * self._ys + Vf / tap2 * (self._ysh + self._y1)
+        return Vf * np.conj(I_ij)
 
     def h(self, theta, Vm):
         """
@@ -342,39 +300,30 @@ class StaticEvaluator:
         ndarray, shape (nm,)
             Computed measurement values.
         """
-        nm = self.meas.nm
-        hx = np.zeros(nm, dtype=float)
-
-        # Complex voltage
+        hx = np.zeros(self.meas.nm, dtype=float)
         V = Vm * np.exp(1j * theta)
 
-        # Direct voltage magnitude
-        for pos, uid in self._direct_v_uid:
-            hx[pos] = Vm[uid]
-
-        # Direct voltage angle
-        for pos, uid in self._direct_a_uid:
-            hx[pos] = theta[uid]
+        # Direct measurements (vectorized fancy-indexing)
+        if len(self._v_pos):
+            hx[self._v_pos] = Vm[self._v_uid]
+        if len(self._a_pos):
+            hx[self._a_pos] = theta[self._a_uid]
 
         # Power injections: S_i = V_i * conj(sum_j Y_ij V_j)
-        if self._pinj_uid or self._qinj_uid:
+        if len(self._pi_pos) or len(self._qi_pos):
             S_inj = V * np.conj(self.Y @ V)
-            for pos, uid in self._pinj_uid:
-                hx[pos] = S_inj[uid].real
-            for pos, uid in self._qinj_uid:
-                hx[pos] = S_inj[uid].imag
+            if len(self._pi_pos):
+                hx[self._pi_pos] = S_inj[self._pi_uid].real
+            if len(self._qi_pos):
+                hx[self._qi_pos] = S_inj[self._qi_uid].imag
 
-        # Line flows (from-end): S_ij = V_i * conj(I_ij)
-        # I_ij = (V_i/tap^2 - V_j/(tap*exp(-j*phi))) * y_series + V_i/tap^2 * (y_sh + y1)
-        for pos, (fi, ti, ys, ysh, y1, y2, tap, phi) in self._pflow_params:
-            m = tap * np.exp(1j * phi)
-            I_ij = (V[fi] / (tap**2) - V[ti] / np.conj(m)) * ys + V[fi] / (tap**2) * (ysh + y1)
-            hx[pos] = (V[fi] * np.conj(I_ij)).real
-
-        for pos, (fi, ti, ys, ysh, y1, y2, tap, phi) in self._qflow_params:
-            m = tap * np.exp(1j * phi)
-            I_ij = (V[fi] / (tap**2) - V[ti] / np.conj(m)) * ys + V[fi] / (tap**2) * (ysh + y1)
-            hx[pos] = (V[fi] * np.conj(I_ij)).imag
+        # Line flows (from-end, vectorized)
+        if len(self._pf_pos) or len(self._qf_pos):
+            S_from = self._line_S_from(V)
+            if len(self._pf_pos):
+                hx[self._pf_pos] = S_from[self._pf_luid].real
+            if len(self._qf_pos):
+                hx[self._qf_pos] = S_from[self._qf_luid].imag
 
         return hx
 
@@ -392,27 +341,22 @@ class StaticEvaluator:
         Returns
         -------
         ndarray, shape (nm, 2*nb)
-            Jacobian matrix.  Columns: [dh/dθ_1..dh/dθ_nb, dh/dV_1..dh/dV_nb].
+            Jacobian matrix.  Columns: [dh/dtheta_1..dh/dtheta_nb, dh/dV_1..dh/dV_nb].
         """
         nb = self.nb
-        nm = self.meas.nm
-        H = np.zeros((nm, 2 * nb), dtype=float)
+        H = np.zeros((self.meas.nm, 2 * nb), dtype=float)
 
-        # Perturb theta columns
         for j in range(nb):
-            theta_p = theta.copy()
-            theta_m = theta.copy()
-            theta_p[j] += eps
-            theta_m[j] -= eps
-            H[:, j] = (self.h(theta_p, Vm) - self.h(theta_m, Vm)) / (2 * eps)
+            tp, tm = theta.copy(), theta.copy()
+            tp[j] += eps
+            tm[j] -= eps
+            H[:, j] = (self.h(tp, Vm) - self.h(tm, Vm)) / (2 * eps)
 
-        # Perturb Vm columns
         for j in range(nb):
-            Vm_p = Vm.copy()
-            Vm_m = Vm.copy()
-            Vm_p[j] += eps
-            Vm_m[j] -= eps
-            H[:, nb + j] = (self.h(theta, Vm_p) - self.h(theta, Vm_m)) / (2 * eps)
+            Vp, Vm_ = Vm.copy(), Vm.copy()
+            Vp[j] += eps
+            Vm_[j] -= eps
+            H[:, nb + j] = (self.h(theta, Vp) - self.h(theta, Vm_)) / (2 * eps)
 
         return H
 
