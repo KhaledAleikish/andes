@@ -159,6 +159,11 @@ class CPF(BaseRoutine):
         self.events = []      # list of event dicts
         self.done_msg = ''
 
+        # --- QV curve results ---
+        self.qv_q = None       # 1-D: Q at target bus (load convention, pu)
+        self.qv_v = None       # 1-D: V at target bus (pu)
+        self.qv_bus = None     # bus idx used in last run_qv()
+
         # --- internal state ---
         self.models = None
         self._p0_base = None
@@ -198,6 +203,9 @@ class CPF(BaseRoutine):
         self.steps = None
         self.events = []
         self.done_msg = ''
+        self.qv_q = None
+        self.qv_v = None
+        self.qv_bus = None
 
         return True
 
@@ -262,6 +270,90 @@ class CPF(BaseRoutine):
         system.exit_code = 0 if success else 1
         return success
 
+    def run_qv(self, bus_idx, q_range=5.0, **kwargs):
+        """
+        Run QV curve analysis at a specific bus.
+
+        Fixes active power everywhere and varies only reactive power
+        at ``bus_idx`` using the continuation engine.  After completion
+        the arrays :attr:`qv_q` and :attr:`qv_v` hold the Q-V curve
+        data (load sign convention).
+
+        The existing ``config.stop_at`` is respected.  Pass
+        ``stop_at='FULL'`` to trace both branches (needed for true
+        reactive power margin).
+
+        Parameters
+        ----------
+        bus_idx : int or str
+            Bus index at which to vary reactive power.  At least one
+            PQ device must exist at this bus.
+        q_range : float, optional
+            Additional reactive power absorption (pu, system base) to
+            sweep at the target bus.  Default 5.0.
+        stop_at : str or float, optional
+            Termination mode override.  If given, temporarily replaces
+            ``config.stop_at`` for this call.  Use ``'FULL'`` to trace
+            both branches and locate the reactive power margin.
+        **kwargs
+            Forwarded to :meth:`run`.  The ``load_scale``,
+            ``p0_target``, ``q0_target``, and ``pg_target`` arguments
+            are not accepted here.
+
+        Returns
+        -------
+        bool
+            True if CPF terminated normally.
+        """
+        self.qv_q = None
+        self.qv_v = None
+        self.qv_bus = None
+
+        _blocked = {'load_scale', 'p0_target', 'q0_target', 'pg_target'}
+        bad = _blocked & kwargs.keys()
+        if bad:
+            raise ValueError(
+                f"{', '.join(sorted(bad))} cannot be used with run_qv()."
+            )
+
+        system = self.system
+
+        pq_bus = np.array(system.PQ.bus.v)
+        mask = (pq_bus == bus_idx)
+
+        if not np.any(mask):
+            raise ValueError(
+                f"No PQ device found at bus {bus_idx}. "
+                f"Add a PQ device with p0=0, q0=0 at that bus first."
+            )
+
+        q0_base = system.PQ.q0.v.copy()
+        q0_target = q0_base.copy()
+        n_pq = int(np.sum(mask))
+        q0_target[mask] = q0_base[mask] + q_range / n_pq
+
+        q_base_at_bus = float(np.sum(q0_base[mask]))
+
+        stop_at = kwargs.pop('stop_at', None)
+        old_stop = self.config.stop_at
+        if stop_at is not None:
+            self.config.stop_at = stop_at
+
+        try:
+            result = self.run(q0_target=q0_target, **kwargs)
+        finally:
+            self.config.stop_at = old_stop
+
+        if result and self.lam is not None and len(self.lam) > 0:
+            bus_uid = system.Bus.idx2uid(bus_idx)
+            # Linear in lambda: _build_targets distributes q_range equally
+            # across all PQ devices at the bus, so total Q = base + lam * range.
+            self.qv_q = q_base_at_bus + self.lam * q_range
+            self.qv_v = self.V[bus_uid, :].copy()
+            self.qv_bus = bus_idx
+
+        return result
+
     def report(self):
         """Print CPF summary."""
         if self.lam is None:
@@ -305,6 +397,57 @@ class CPF(BaseRoutine):
         nose_idx = np.argmax(self.lam)
         ax.plot(self.lam[nose_idx], self.V[uid, nose_idx], 'r*', markersize=12,
                 label=f'Nose ($\\lambda$={self.max_lam:.4f})')
+        ax.legend()
+
+        if show:
+            plt.show()
+
+        return fig, ax
+
+    def plot_qv(self, fig=None, ax=None, show=True):
+        """
+        Plot QV curve from the last :meth:`run_qv` call.
+
+        Uses the standard convention: x-axis is voltage magnitude,
+        y-axis is reactive power injection (positive = capacitive
+        support to the bus, i.e. negated load convention).
+
+        Parameters
+        ----------
+        fig : matplotlib Figure, optional
+        ax : matplotlib Axes, optional
+        show : bool, optional
+            Call ``plt.show()`` if True (default).
+
+        Returns
+        -------
+        tuple
+            (fig, ax)
+        """
+        try:
+            import matplotlib.pyplot as plt
+        except ImportError:
+            logger.warning("matplotlib is required for plotting.")
+            return
+
+        if self.qv_q is None or self.qv_v is None:
+            logger.warning("No QV results. Run run_qv() first.")
+            return
+
+        if fig is None or ax is None:
+            fig, ax = plt.subplots(1, 1)
+
+        q_inj = -self.qv_q
+
+        ax.plot(self.qv_v, q_inj, '-o', markersize=3)
+        ax.set_xlabel(f'|V| at Bus {self.qv_bus} (pu)')
+        ax.set_ylabel('Q injected (pu, system base)')
+        ax.set_title(f'QV Curve at Bus {self.qv_bus}')
+        ax.grid(True, alpha=0.3)
+
+        nose_idx = np.argmin(q_inj)
+        ax.plot(self.qv_v[nose_idx], q_inj[nose_idx], 'r*', markersize=12,
+                label=f'Q margin = {-q_inj[nose_idx]:.4f} pu')
         ax.legend()
 
         if show:

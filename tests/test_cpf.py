@@ -478,9 +478,10 @@ class TestCPFFailurePaths(unittest.TestCase):
                        p0_target=ss.PQ.p0.v * 3.0)
 
         found = any('load_scale' in msg and 'ignored' in msg
-                     for msg in cm.output)
-        self.assertTrue(found, f"Expected warning about ignored targets, "
-                                f"got: {cm.output}")
+                    for msg in cm.output)
+        self.assertTrue(found,
+                        f"Expected warning about ignored targets, "
+                        f"got: {cm.output}")
 
     def test_corrector_failure_returns_false(self):
         """Corrector failure on lower branch must return False.
@@ -501,6 +502,110 @@ class TestCPFFailurePaths(unittest.TestCase):
                              "Corrector failure must return False")
             self.assertFalse(ss.CPF.converged)
             self.assertEqual(ss.exit_code, 1)
+
+
+class TestCPFQVCurve(unittest.TestCase):
+    """Tests for QV curve analysis via CPF."""
+
+    def _fresh_ss(self):
+        ss = andes.load(andes.get_case('ieee14/ieee14.raw'),
+                        default_config=True)
+        ss.PFlow.run()
+        return ss
+
+    def test_run_qv_converges(self):
+        """QV curve on Bus 14 (weakest bus in IEEE 14) converges."""
+        ss = self._fresh_ss()
+        result = ss.CPF.run_qv(bus_idx=14, q_range=3.0)
+        self.assertTrue(result)
+        self.assertIsNotNone(ss.CPF.qv_q)
+        self.assertIsNotNone(ss.CPF.qv_v)
+        self.assertEqual(len(ss.CPF.qv_q), len(ss.CPF.qv_v))
+        self.assertGreater(len(ss.CPF.qv_q), 2)
+
+    def test_qv_results_shape(self):
+        """qv_q and qv_v have same length as lam."""
+        ss = self._fresh_ss()
+        ss.CPF.run_qv(bus_idx=14, q_range=3.0)
+        self.assertEqual(len(ss.CPF.qv_q), len(ss.CPF.lam))
+        self.assertEqual(len(ss.CPF.qv_v), len(ss.CPF.lam))
+
+    def test_qv_bus_stored(self):
+        """qv_bus stores the correct bus index."""
+        ss = self._fresh_ss()
+        ss.CPF.run_qv(bus_idx=14, q_range=3.0)
+        self.assertEqual(ss.CPF.qv_bus, 14)
+
+    def test_qv_no_pq_at_bus_raises(self):
+        """Requesting QV at a bus with no PQ device raises ValueError."""
+        ss = self._fresh_ss()
+        with self.assertRaises(ValueError):
+            ss.CPF.run_qv(bus_idx=1, q_range=3.0)
+
+    def test_qv_base_restored(self):
+        """System state is restored after run_qv."""
+        ss = self._fresh_ss()
+        p0_orig = ss.PQ.p0.v.copy()
+        q0_orig = ss.PQ.q0.v.copy()
+        y_orig = ss.dae.y.copy()
+
+        ss.CPF.run_qv(bus_idx=14, q_range=3.0)
+
+        np.testing.assert_allclose(ss.PQ.p0.v, p0_orig)
+        np.testing.assert_allclose(ss.PQ.q0.v, q0_orig)
+        np.testing.assert_allclose(ss.dae.y, y_orig, atol=1e-10)
+
+    def test_qv_voltage_decreases(self):
+        """Voltage should decrease as Q absorption increases."""
+        ss = self._fresh_ss()
+        ss.CPF.run_qv(bus_idx=14, q_range=3.0)
+        self.assertLess(ss.CPF.qv_v[-1], ss.CPF.qv_v[0])
+
+    def test_qv_blocked_kwargs_raise(self):
+        """load_scale, p0_target, q0_target, pg_target are blocked."""
+        ss = self._fresh_ss()
+        for kwarg in ('load_scale', 'p0_target', 'q0_target', 'pg_target'):
+            with self.subTest(kwarg=kwarg):
+                with self.assertRaises(ValueError):
+                    ss.CPF.run_qv(bus_idx=14, q_range=3.0, **{kwarg: 1.0})
+
+    def test_qv_cleared_on_early_raise(self):
+        """Stale qv_* must not survive after a failed run_qv call."""
+        ss = self._fresh_ss()
+        ss.CPF.run_qv(bus_idx=14, q_range=3.0)
+        self.assertIsNotNone(ss.CPF.qv_q)
+
+        with self.assertRaises(ValueError):
+            ss.CPF.run_qv(bus_idx=1, q_range=3.0)
+
+        self.assertIsNone(ss.CPF.qv_q)
+        self.assertIsNone(ss.CPF.qv_v)
+        self.assertIsNone(ss.CPF.qv_bus)
+
+    def test_qv_cleared_on_failure(self):
+        """qv_* must be None when CPF fails (e.g. max_steps=1)."""
+        ss = self._fresh_ss()
+        ss.CPF.config.max_steps = 1
+        result = ss.CPF.run_qv(bus_idx=14, q_range=3.0)
+        self.assertFalse(result)
+        self.assertIsNone(ss.CPF.qv_q)
+
+    def test_qv_stop_at_override(self):
+        """stop_at passed to run_qv is used and then restored."""
+        ss = self._fresh_ss()
+        original = ss.CPF.config.stop_at
+        ss.CPF.run_qv(bus_idx=14, q_range=3.0, stop_at='NOSE')
+        self.assertEqual(ss.CPF.config.stop_at, original)
+
+    def test_qv_q_starts_at_base(self):
+        """First Q value should match base-case Q at the target bus."""
+        ss = self._fresh_ss()
+        pq_bus = np.array(ss.PQ.bus.v)
+        mask = (pq_bus == 14)
+        q_base = float(np.sum(ss.PQ.q0.v[mask]))
+
+        ss.CPF.run_qv(bus_idx=14, q_range=3.0)
+        np.testing.assert_allclose(ss.CPF.qv_q[0], q_base, atol=1e-6)
 
 
 if __name__ == '__main__':

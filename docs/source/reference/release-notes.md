@@ -97,6 +97,9 @@ API improvements:
   suggesting close matches with ``difflib.get_close_matches``.
 - Document ``System.add()`` kwargs support and the ``model`` parameter
   collision caveat for ``Alter`` and ``Toggle``.
+- Add ``CPF.run_qv()`` and ``CPF.plot_qv()`` for QV curve analysis at a
+  specified bus. Delegates to the existing continuation engine with Q-only
+  targets; results stored in ``qv_q``, ``qv_v``, and ``qv_bus``.
 - Add Plotly backend for interactive TDS plots in Jupyter notebooks via
   ``ss.TDS.plt.plot(..., backend='plotly')``. Supports zoom, pan, hover
   tooltips, horizontal/vertical reference lines, figure reuse, and HTML
