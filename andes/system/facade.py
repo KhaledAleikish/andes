@@ -1291,6 +1291,18 @@ class System:
         """
         return self.registry.check_group_common()
 
+    def _check_group_common(self):
+        """
+        Check if all group common variables and parameters are met.
+        """
+        warnings.warn(
+            "System._check_group_common() is deprecated and will be removed in v3.0. "
+            "Use system.registry.check_group_common() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.registry.check_group_common()
+
     def collect_ref(self):
         """
         Collect indices into `BackRef` for all models.
@@ -1666,7 +1678,7 @@ class System:
         uid = mdl.idx2uid(idx)
         return self._get_effective_status(mdl, uid)
 
-    def get_connected(self, model_or_group, idx):
+    def find_connected(self, model_or_group, idx):
         """
         Find all devices connected to a given device.
 
@@ -1690,7 +1702,7 @@ class System:
         --------
         Find all devices connected to Bus 1::
 
-            ss.get_connected('Bus', 1)
+            ss.find_connected('Bus', 1)
             # OrderedDict([('PQ', [1]), ('Line', [1, 4]), ('GENROU', [1])])
         """
         # Build and cache the reverse index on first call
