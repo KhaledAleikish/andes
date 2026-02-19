@@ -12,7 +12,7 @@ from collections import OrderedDict
 from andes.routines.base import BaseRoutine
 from andes.routines.daeint import Trapezoid, method_map
 from andes.routines.criteria import deltadelta
-from andes.shared import get_tqdm, matrix, np, pd, spdiag, tqdm
+from andes.shared import get_tqdm, matrix, np, pd, spdiag, tqdm, tqdm_nb
 from andes.utils.misc import elapsed, is_interactive, is_notebook
 from andes.utils.tab import Tab
 
@@ -380,8 +380,12 @@ class TDS(BaseRoutine):
 
         # Get appropriate tqdm based on environment (terminal, notebook, or batch)
         tqdm_cls, disable = get_tqdm(self.config.no_tqdm)
-        self.pbar = tqdm_cls(total=100, unit='%', ncols=80, ascii=True,
-                             file=sys.stdout, disable=disable)
+
+        pbar_kwargs = dict(total=100, unit='%', disable=disable)
+        if tqdm_cls is not tqdm_nb:
+            pbar_kwargs.update(ncols=80, ascii=True, file=sys.stdout)
+
+        self.pbar = tqdm_cls(**pbar_kwargs)
 
         # set initial pbar percentage; also works for resumed simulation
         perc = round((dae.t - config.t0) / (config.tf - config.t0) * 100, 2)
@@ -712,6 +716,18 @@ class TDS(BaseRoutine):
         from andes.plot import TDSData  # NOQA
         self.plotter = TDSData(mode='memory', dae=self.system.dae)
         self.plt = self.plotter
+
+    def plot(self, *args, **kwargs):
+        """
+        Shorthand for ``TDS.plt.plot(...)``.
+
+        Loads the plotter on first use if not already loaded.
+        All arguments are passed through to :py:meth:`TDSData.plot`.
+        """
+
+        if self.plt is None:
+            self.load_plotter()
+        return self.plt.plot(*args, **kwargs)
 
     def test_init(self):
         """
