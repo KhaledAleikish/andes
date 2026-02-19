@@ -260,6 +260,8 @@ class REECA1Model(Model):
     REEC_A model implementation.
     """
 
+    _setpoints = {'pref': 'Pref0', 'qref': 'qref0'}
+
     def __init__(self, system, config):
         Model.__init__(self, system, config)
 
@@ -505,10 +507,15 @@ class REECA1Model(Model):
                         e_str='1.0 - wg',
                         )
 
+        self.Pref0 = ConstService(v_str='p0',
+                                  tex_name='P_{ref0}',
+                                  info='initial P ref',
+                                  )
+
         self.Pref = Algeb(tex_name='P_{ref}',
                           info='external P ref',
                           v_str='p0 / wg',
-                          e_str='p0 / wg - Pref',
+                          e_str='Pref0 / wg - Pref',
                           unit='p.u.',
                           )
 

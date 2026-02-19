@@ -99,6 +99,9 @@ class GENBase(Model):
     Defines shared network and dq-component variables.
     """
 
+    # Fallback setpoints when no controller (governor/exciter) is connected.
+    _setpoints = {'pref': 'tm0', 'vref': 'vf0'}
+
     def __init__(self, system, config):
         super().__init__(system, config)
         self.group = 'SynGen'

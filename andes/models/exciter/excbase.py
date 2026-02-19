@@ -41,6 +41,8 @@ class ExcBase(Model):
     variables.
     """
 
+    _setpoints = {'vref': 'vref0'}
+
     def __init__(self, system, config):
         Model.__init__(self, system, config)
         self.group = 'Exciter'

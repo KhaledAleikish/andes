@@ -46,6 +46,8 @@ class TGBase(Model):
 
     """
 
+    _setpoints = {'pref': 'pref0'}
+
     def __init__(self, system, config, add_sn=True, add_tm0=True):
         Model.__init__(self, system, config)
         self.group = 'TurbineGov'

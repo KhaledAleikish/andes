@@ -154,6 +154,8 @@ class REGF1Model(Model):
     Common variables and services for VSG models.
     """
 
+    _setpoints = {'pref': 'Pref', 'qref': 'Qref', 'vref': 'vref'}
+
     def __init__(self, system, config):
         Model.__init__(self, system, config)
         self.flags.tds = True
@@ -226,8 +228,15 @@ class REGF1Model(Model):
                                 )
         # --- Constants end ---
 
-        self.Paux = Algeb(v_str='0', e_str='Paux')
-        self.Qaux = Algeb(v_str='0', e_str='Qaux')
+        self.Paux0 = ConstService(v_str='0',
+                                  tex_name='P_{aux0}',
+                                  info='const. auxiliary P input')
+        self.Qaux0 = ConstService(v_str='0',
+                                  tex_name='Q_{aux0}',
+                                  info='const. auxiliary Q input')
+
+        self.Paux = Algeb(v_str='Paux0', e_str='Paux0 - Paux')
+        self.Qaux = Algeb(v_str='Qaux0', e_str='Qaux0 - Qaux')
 
         # s0 and s1
         self.Psen = Lag(u='Pe', K=1, T=self.Tr)

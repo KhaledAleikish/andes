@@ -151,6 +151,8 @@ class REGCV1ModelBase(Model):
     Common variables and services for VSG models.
     """
 
+    _setpoints = {'pref': 'Pref', 'qref': 'Qref', 'vref': 'vref'}
+
     def __init__(self, system, config):
         Model.__init__(self, system, config)
         self.flags.tds = True

@@ -486,6 +486,194 @@ class GroupBase:
 
         return ret
 
+    def _find_controller(self, system, idx, controller_group, param_name):
+        """
+        Find the controller device in ``controller_group`` whose ``param_name``
+        points to ``idx`` in this group.
+
+        Uses a lazily-built reverse lookup cache for O(1) repeated calls.
+
+        Parameters
+        ----------
+        system : System
+            The system instance.
+        idx : str, int, float
+            Device idx in this group.
+        controller_group : str
+            Name of the controller group (e.g., ``'TurbineGov'``).
+        param_name : str
+            Name of the IdxParam on the controller that references this group
+            (e.g., ``'syn'``).
+
+        Returns
+        -------
+        tuple
+            ``(model_instance, controller_idx)`` if found, ``(None, None)``
+            otherwise.
+        """
+        if not hasattr(self, '_ctrl_cache'):
+            self._ctrl_cache = {}
+
+        cache_key = (controller_group, param_name)
+
+        if cache_key not in self._ctrl_cache:
+            lookup = {}
+            grp = system.groups.get(controller_group)
+            if grp is not None and grp.n > 0:
+                for mdl in grp.models.values():
+                    param = mdl.__dict__.get(param_name)
+                    if param is None:
+                        continue
+                    for uid, ctrl_idx in enumerate(mdl.idx.v):
+                        target_idx = param.v[uid]
+                        lookup[target_idx] = ctrl_idx
+            self._ctrl_cache[cache_key] = lookup
+
+        ctrl_idx = self._ctrl_cache[cache_key].get(idx)
+        if ctrl_idx is None:
+            return None, None
+
+        grp = system.groups[controller_group]
+        ctrl_mdl = grp.idx2model(ctrl_idx)
+        return ctrl_mdl, ctrl_idx
+
+    def _resolve_setpoint(self, system, idx, name):
+        """
+        Resolve the controller chain for a setpoint and return the
+        target ``(model, device_idx)``.
+
+        Searches ``_setpoint_priority`` (defined on subclasses) for a
+        connected controller that declares ``name`` in its
+        ``_setpoints``.  Falls back to the device itself.
+
+        ``_setpoint_priority`` is a class-level dict on group subclasses
+        that maps setpoint names to a list of ``(controller_group,
+        param_name)`` tuples to search, in order.  ``param_name`` is the
+        IdxParam on the controller that references this group (e.g.,
+        ``'syn'`` for TurbineGov/Exciter, ``'reg'`` for RenExciter).
+        These param names are enforced by each controller group's
+        ``common_params``.
+
+        Example on SynGen::
+
+            _setpoint_priority = {
+                'pref': [('TurbineGov', 'syn')],
+                'vref': [('Exciter', 'syn')],
+            }
+
+        Parameters
+        ----------
+        system : System
+            The system instance.
+        idx : str, int, float
+            Device idx in this group.
+        name : str
+            Setpoint key (e.g., ``'pref'``, ``'vref'``).
+
+        Returns
+        -------
+        tuple
+            ``(model_instance, device_idx)``
+
+        Raises
+        ------
+        KeyError
+            If neither a controller nor the device itself declares
+            the requested setpoint.
+        """
+        priority = getattr(self, '_setpoint_priority', {})
+        for ctrl_group, ctrl_param in priority.get(name, []):
+            ctrl_mdl, ctrl_idx = self._find_controller(
+                system, idx, ctrl_group, ctrl_param
+            )
+            if ctrl_mdl is not None:
+                sp_map = getattr(ctrl_mdl, '_setpoints', {})
+                if name in sp_map:
+                    return ctrl_mdl, ctrl_idx
+
+        # Fallback: the device itself
+        mdl = self.idx2model(idx)
+        sp_map = getattr(mdl, '_setpoints', {})
+
+        if name not in sp_map:
+            raise KeyError(
+                f"No controller found for {self.class_name} idx={idx!r} "
+                f"setpoint '{name}', and <{mdl.class_name}> does not "
+                f"declare '{name}' in _setpoints."
+            )
+
+        if priority.get(name):
+            logger.warning(
+                "No %s controller found for %s idx=%r. "
+                "Writing '%s' directly to <%s>.",
+                priority[name][0][0], self.class_name, idx,
+                name, mdl.class_name,
+            )
+
+        return mdl, idx
+
+    def set_setpoint(self, system, idx, name, value):
+        """
+        Set a setpoint value by resolving the controller chain.
+
+        Searches for a connected controller (e.g., TurbineGov for
+        ``'pref'``, Exciter for ``'vref'``) and writes there.
+        Falls back to the device itself with a warning.
+
+        .. note::
+
+            The physical meaning of a setpoint depends on the specific
+            controller model that owns it.  For example, ``'vref'``
+            writes to the exciter's voltage reference input, which may
+            include compensation terms (e.g., EXAC4 initializes
+            ``vref0 = v + vf0/KA``).  It is **not** necessarily the
+            exact terminal voltage.  Similarly, ``'pref'`` is the
+            governor's power reference in system-base per-unit.  Use
+            :meth:`get_setpoint` to read the current value before
+            applying incremental changes.
+
+        Parameters
+        ----------
+        system : System
+            The system instance.
+        idx : str, int, float
+            Device idx in this group.
+        name : str
+            Setpoint key (e.g., ``'pref'``, ``'vref'``, ``'qref'``).
+        value : float
+            Value to write (absolute, in system-base per-unit).
+        """
+        mdl, dev_idx = self._resolve_setpoint(system, idx, name)
+        attr_name = mdl._setpoints[name]
+        uid = mdl.idx2uid(dev_idx)
+        mdl.__dict__[attr_name].v[uid] = value
+
+    def get_setpoint(self, system, idx, name):
+        """
+        Get the current setpoint value by resolving the controller chain.
+
+        See :meth:`set_setpoint` for notes on the physical meaning of
+        setpoint values.
+
+        Parameters
+        ----------
+        system : System
+            The system instance.
+        idx : str, int, float
+            Device idx in this group.
+        name : str
+            Setpoint key (e.g., ``'pref'``, ``'vref'``, ``'qref'``).
+
+        Returns
+        -------
+        float
+            Current value of the setpoint (system-base per-unit).
+        """
+        mdl, dev_idx = self._resolve_setpoint(system, idx, name)
+        attr_name = mdl._setpoints[name]
+        uid = mdl.idx2uid(dev_idx)
+        return mdl.__dict__[attr_name].v[uid]
+
     def set_backref(self, name, from_idx, to_idx):
         """
         Set idxes to ``BackRef``, and set them to models.
@@ -807,6 +995,11 @@ class SynGen(GroupBase):
 
     """
 
+    _setpoint_priority = {
+        'pref': [('TurbineGov', 'syn')],
+        'vref': [('Exciter', 'syn')],
+    }
+
     def __init__(self):
         super().__init__()
         self.common_params.extend(('bus', 'gen', 'Sn', 'Vn', 'fn', 'M', 'D', 'subidx'))
@@ -814,6 +1007,49 @@ class SynGen(GroupBase):
         self.idx_island = []
         self.uid_island = []
         self.delta_addr = []
+
+    def set_pref(self, system, idx, value):
+        """
+        Set active power reference for a synchronous generator.
+
+        Routes to the turbine governor's ``pref0`` if one is connected;
+        otherwise falls back to the generator's ``tm0`` with a warning.
+
+        The value is in system-base per-unit.
+        Use :meth:`get_pref` to read the current value before applying
+        incremental changes.
+        """
+        self.set_setpoint(system, idx, 'pref', value)
+
+    def get_pref(self, system, idx):
+        """
+        Get active power reference. See :meth:`set_pref` for semantics.
+        """
+        return self.get_setpoint(system, idx, 'pref')
+
+    def set_vref(self, system, idx, value):
+        """
+        Set voltage reference for a synchronous generator.
+
+        Routes to the exciter's ``vref0`` if one is connected;
+        otherwise falls back to the generator's ``vf0`` with a warning.
+
+        .. warning::
+
+            The exciter voltage reference is **not** necessarily the
+            terminal voltage.  Its meaning depends on the exciter model.
+            Most exciters initialize ``vref0 = vref`` (the pre-fault
+            voltage error input), but some (e.g., EXAC4) use a
+            model-specific formula.  Use :meth:`get_vref` to read the
+            current value before applying incremental changes.
+        """
+        self.set_setpoint(system, idx, 'vref', value)
+
+    def get_vref(self, system, idx):
+        """
+        Get voltage reference. See :meth:`set_vref` for semantics.
+        """
+        return self.get_setpoint(system, idx, 'vref')
 
     def store_idx_island(self, bus_idx):
         """
@@ -855,10 +1091,62 @@ class RenGen(GroupBase):
     ranges and cause the initialization to fail.
     """
 
+    _setpoint_priority = {
+        'pref': [('RenExciter', 'reg')],
+        'qref': [('RenExciter', 'reg')],
+    }
+
     def __init__(self):
         super().__init__()
         self.common_params.extend(('bus', 'gen', 'Sn'))
         self.common_vars.extend(('Pe', 'Qe'))
+
+    def set_pref(self, system, idx, value):
+        """
+        Set active power reference for a renewable generator.
+
+        Routes to the renewable exciter's ``Pref0`` (e.g., REECA1,
+        REECB1) if one is connected; otherwise falls back to the
+        converter model with a warning.
+
+        The value is in system-base per-unit.
+        For REECA1 with ``PFLAG=1``, the internal equation normalizes
+        by generator speed (``wg``), so the setpoint represents
+        electrical power, not mechanical power.
+
+        Use :meth:`get_pref` to read the current value before applying
+        incremental changes.
+        """
+        self.set_setpoint(system, idx, 'pref', value)
+
+    def get_pref(self, system, idx):
+        """
+        Get active power reference. See :meth:`set_pref` for semantics.
+        """
+        return self.get_setpoint(system, idx, 'pref')
+
+    def set_qref(self, system, idx, value):
+        """
+        Set reactive power reference for a renewable generator.
+
+        Routes to the renewable exciter's ``qref0`` (e.g., REECA1,
+        REECB1) if one is connected; otherwise falls back to the
+        converter model with a warning.
+
+        The value is in system-base per-unit.
+        The interpretation depends on the exciter's reactive power
+        control mode (voltage regulation vs. constant Q).
+
+        Use :meth:`get_qref` to read the current value before applying
+        incremental changes.
+        """
+        self.set_setpoint(system, idx, 'qref', value)
+
+    def get_qref(self, system, idx):
+        """
+        Get reactive power reference. See :meth:`set_qref` for semantics.
+        """
+        return self.get_setpoint(system, idx, 'qref')
 
 
 class RenExciter(GroupBase):
