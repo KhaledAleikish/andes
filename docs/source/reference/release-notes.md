@@ -57,6 +57,17 @@ Eigenvalue analysis:
 - Replace permutation-based reorder with a fold/eliminate/reduce pipeline in
   eigenvalue analysis for improved numerical robustness.
 
+State estimation:
+
+- Add LAV (Least Absolute Value) estimator via iteratively reweighted least
+  squares (IRLS), robust to gross measurement errors. Pass
+  ``algorithm=lav`` to ``SE.run()``.
+- Vectorize weight handling in both WLS and LAV to avoid dense diagonal
+  matrix construction.
+- Add chi-squared test guard that rejects with a warning for non-WLS
+  algorithms.
+- Raise default ``max_iter`` from 20 to 100 for IRLS convergence.
+
 PSS/E parser:
 
 - Refactor RAW parser to a data-driven architecture with PSS/E v34 support.

@@ -46,13 +46,13 @@ class SE(BaseRoutine):
     def __init__(self, system=None, config=None):
         super().__init__(system, config)
         self.config.add(OrderedDict((('tol', 1e-4),
-                                      ('max_iter', 20),
-                                      ('flat_start', 0),
-                                      ('report', 1),
-                                      )))
+                                     ('max_iter', 100),
+                                     ('flat_start', 0),
+                                     ('report', 1),
+                                     )))
         self.config.add_extra("_help",
                               tol="convergence tolerance",
-                              max_iter="max number of WLS iterations",
+                              max_iter="max number of SE iterations",
                               flat_start="use flat start (1.0 pu, 0 rad) as initial guess",
                               report="write output report",
                               )
@@ -67,12 +67,16 @@ class SE(BaseRoutine):
         self.result = None
         self.measurements = None
         self.evaluator = None
+        self._algorithm = None
 
-    def summary(self):
+    def summary(self, algo=None):
         """Print SE configuration summary."""
+        if algo is None:
+            algo = wls
+        algo_name = getattr(algo, '__name__', str(algo)).upper()
         out = ['',
                '-> State Estimation',
-               f'{"Method":>16s}: WLS',
+               f'{"Method":>16s}: {algo_name}',
                f'{"Tolerance":>16s}: {self.config.tol}',
                f'{"Max iterations":>16s}: {self.config.max_iter}',
                ]
@@ -133,7 +137,10 @@ class SE(BaseRoutine):
         """
         system = self.system
 
-        self.summary()
+        algo = algorithm if algorithm is not None else wls
+        self._algorithm = algo
+
+        self.summary(algo)
 
         t0, _ = elapsed()
 
@@ -151,9 +158,6 @@ class SE(BaseRoutine):
                 np.array(system.Bus.a.v, dtype=float),
                 np.array(system.Bus.v.v, dtype=float),
             ])
-
-        # Run algorithm
-        algo = algorithm if algorithm is not None else wls
         self.result = algo(
             self.evaluator, x0,
             tol=self.config.tol,
@@ -213,11 +217,22 @@ class SE(BaseRoutine):
         -------
         tuple
             (passed, J, threshold, dof) where dof = nm - n_state.
+
+        Notes
+        -----
+        The chi-squared test is only valid for WLS, where the objective J
+        follows a chi-squared distribution.  Using it after a non-WLS
+        algorithm (e.g. LAV) will log a warning and return ``passed=False``.
         """
         from scipy.stats import chi2
 
         if self.result is None:
             raise RuntimeError("No SE result available. Run SE first.")
+
+        if getattr(self, '_algorithm', wls) is not wls:
+            logger.warning("Chi-squared test is only valid for WLS. "
+                           "The last SE run used a different algorithm.")
+            return (False, self.result['J'], float('inf'), 0)
 
         nm = self.measurements.nm
         n_state = 2 * self.system.Bus.n

@@ -8,6 +8,7 @@ import numpy as np
 
 import andes
 from andes.se.measurement import Measurements, StaticEvaluator
+from andes.se.algorithms import lav
 
 
 class TestSEConvergence(unittest.TestCase):
@@ -275,6 +276,172 @@ class TestBuildYbus(unittest.TestCase):
             Y_ref[uid, uid] += complex(shunt.g.v[i], shunt.b.v[i])
 
         np.testing.assert_allclose(Y_sys, Y_ref, atol=1e-12)
+
+
+class TestLAV(unittest.TestCase):
+    """Tests for LAV (Least Absolute Value) state estimation."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ss = andes.load(andes.get_case('ieee14/ieee14.raw'),
+                            default_config=True)
+        cls.ss.PFlow.run()
+
+    def test_zero_noise_recovers_pflow(self):
+        """LAV with zero noise must recover PFlow solution."""
+        ss = self.ss
+        m = Measurements(ss)
+        m.add_bus_voltage(sigma=0.01)
+        m.add_bus_angle(sigma=0.01)
+        m.add_bus_injection(sigma_p=0.02, sigma_q=0.03)
+        m.add_line_flow(sigma_p=0.02, sigma_q=0.03)
+
+        m.finalize()
+        ev = StaticEvaluator(ss, m)
+        theta_true = np.array(ss.Bus.a.v, dtype=float)
+        Vm_true = np.array(ss.Bus.v.v, dtype=float)
+        m.z = ev.h(theta_true, Vm_true)
+
+        ss.SE.run(measurements=m, algorithm=lav)
+
+        self.assertTrue(ss.SE.converged)
+        np.testing.assert_allclose(ss.SE.v_est, Vm_true, atol=1e-6)
+        np.testing.assert_allclose(ss.SE.a_est, theta_true, atol=1e-6)
+
+    def test_gaussian_noise_converges(self):
+        """LAV with Gaussian noise must converge (IRLS needs more iterations)."""
+        ss = self.ss
+        m = Measurements(ss)
+        m.add_bus_voltage(sigma=0.01)
+        m.add_bus_injection(sigma_p=0.02, sigma_q=0.03)
+        m.generate_from_pflow(seed=42)
+
+        ss.SE.run(measurements=m, algorithm=lav)
+
+        self.assertTrue(ss.SE.converged)
+        v_err = np.max(np.abs(ss.SE.v_est - np.array(ss.Bus.v.v)))
+        a_err = np.max(np.abs(ss.SE.a_est - np.array(ss.Bus.a.v)))
+        self.assertLess(v_err, 0.05, "Voltage error too large")
+        self.assertLess(a_err, 0.1, "Angle error too large")
+
+    def test_robust_to_bad_data(self):
+        """LAV should be more robust than WLS to gross measurement errors."""
+        ss = self.ss
+        theta_true = np.array(ss.Bus.a.v, dtype=float)
+        Vm_true = np.array(ss.Bus.v.v, dtype=float)
+
+        # Build measurements with a gross error
+        m_wls = Measurements(ss)
+        m_wls.add_bus_voltage(sigma=0.01)
+        m_wls.add_bus_angle(sigma=0.01)
+        m_wls.add_bus_injection(sigma_p=0.02, sigma_q=0.03)
+        m_wls.add_line_flow(sigma_p=0.02, sigma_q=0.03)
+        m_wls.finalize()
+        ev = StaticEvaluator(ss, m_wls)
+        m_wls.z = ev.h(theta_true, Vm_true).copy()
+
+        # Inject a 20-sigma outlier into one voltage measurement
+        m_wls.z[0] += 20 * m_wls.sigma[0]
+
+        # Build identical measurements for LAV
+        m_lav = Measurements(ss)
+        m_lav.add_bus_voltage(sigma=0.01)
+        m_lav.add_bus_angle(sigma=0.01)
+        m_lav.add_bus_injection(sigma_p=0.02, sigma_q=0.03)
+        m_lav.add_line_flow(sigma_p=0.02, sigma_q=0.03)
+        m_lav.finalize()
+        m_lav.z = m_wls.z.copy()
+        m_lav.sigma = m_wls.sigma.copy()
+
+        # Run WLS
+        ss.SE.run(measurements=m_wls)
+        self.assertTrue(ss.SE.converged, "WLS must converge for comparison")
+        wls_v_err = np.max(np.abs(ss.SE.v_est - Vm_true))
+
+        # Run LAV
+        ss.SE.run(measurements=m_lav, algorithm=lav)
+        self.assertTrue(ss.SE.converged, "LAV must converge")
+        lav_v_err = np.max(np.abs(ss.SE.v_est - Vm_true))
+
+        # LAV should produce smaller voltage error than WLS
+        self.assertLess(lav_v_err, wls_v_err,
+                        f"LAV error ({lav_v_err:.6f}) should be less than "
+                        f"WLS error ({wls_v_err:.6f}) with bad data")
+
+    def test_returns_correct_keys(self):
+        """LAV result dict must have the same keys as WLS."""
+        ss = self.ss
+        m = Measurements(ss)
+        m.add_bus_voltage(sigma=0.01)
+        m.add_bus_injection(sigma_p=0.02, sigma_q=0.03)
+        m.generate_from_pflow(seed=42)
+
+        ss.SE.run(measurements=m, algorithm=lav)
+
+        expected_keys = {'x_est', 'converged', 'n_iter', 'residuals', 'J', 'gain_matrix'}
+        self.assertEqual(set(ss.SE.result.keys()), expected_keys)
+
+    def test_chi_squared_rejected_after_lav(self):
+        """Chi-squared test must return passed=False after LAV."""
+        ss = self.ss
+        m = Measurements(ss)
+        m.add_bus_voltage(sigma=0.01)
+        m.add_bus_injection(sigma_p=0.02, sigma_q=0.03)
+        m.generate_from_pflow(seed=42)
+
+        ss.SE.run(measurements=m, algorithm=lav)
+
+        passed, J, threshold, dof = ss.SE.chi_squared_test()
+        self.assertFalse(passed,
+                         "chi_squared_test must reject after non-WLS run")
+        self.assertEqual(threshold, float('inf'),
+                         "threshold must be inf when chi-squared is inapplicable")
+
+
+class TestAlgorithmEdgeCases(unittest.TestCase):
+    """Edge case tests for SE algorithms."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ss = andes.load(andes.get_case('ieee14/ieee14.raw'),
+                            default_config=True)
+        cls.ss.PFlow.run()
+
+    def test_wls_max_iter_zero(self):
+        """WLS with max_iter=0 returns not-converged without crashing."""
+        from andes.se.algorithms import wls
+
+        ss = self.ss
+        m = Measurements(ss)
+        m.add_bus_voltage(sigma=0.01)
+        m.add_bus_injection(sigma_p=0.02, sigma_q=0.03)
+        m.generate_from_pflow(seed=42)
+        m.finalize()
+
+        ev = StaticEvaluator(ss, m)
+        x0 = np.concatenate([np.array(ss.Bus.a.v, dtype=float),
+                             np.array(ss.Bus.v.v, dtype=float)])
+
+        result = wls(ev, x0, max_iter=0)
+        self.assertFalse(result['converged'])
+        self.assertIsNone(result['gain_matrix'])
+
+    def test_lav_max_iter_zero(self):
+        """LAV with max_iter=0 returns not-converged without crashing."""
+        ss = self.ss
+        m = Measurements(ss)
+        m.add_bus_voltage(sigma=0.01)
+        m.add_bus_injection(sigma_p=0.02, sigma_q=0.03)
+        m.generate_from_pflow(seed=42)
+        m.finalize()
+
+        ev = StaticEvaluator(ss, m)
+        x0 = np.concatenate([np.array(ss.Bus.a.v, dtype=float),
+                             np.array(ss.Bus.v.v, dtype=float)])
+
+        result = lav(ev, x0, max_iter=0)
+        self.assertFalse(result['converged'])
+        self.assertIsNone(result['gain_matrix'])
 
 
 if __name__ == '__main__':
