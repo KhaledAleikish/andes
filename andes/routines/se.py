@@ -260,6 +260,9 @@ class SE(BaseRoutine):
         m.add_bus_voltage(sigma=0.01)
         m.add_bus_injection(sigma_p=0.02, sigma_q=0.03)
         m.generate_from_pflow(seed=seed)
+        logger.info("No measurements provided; using default set "
+                    "(all bus voltages + all bus injections, %d measurements).",
+                    m.nm)
         return m
 
     def _ensure_angle_reference(self):
