@@ -2142,36 +2142,3 @@ class System:
 
         self.Output.xidx = sorted(np.unique(export_vars['x']))
         self.Output.yidx = sorted(np.unique(export_vars['y']))
-
-    # --------------- DAE Compaction ---------------
-
-    @staticmethod
-    def _break_var_contiguity(var):
-        """Backward-compatible wrapper to :class:`andes.system.dae_compactor.DAECompactor`."""
-        DAECompactor._break_var_contiguity(var)
-
-    def compact_dae(self):
-        """
-        Delegate to :class:`andes.system.dae_compactor.DAECompactor`.
-        """
-        return self.dae_compactor.compact_dae()
-
-    def _detect_replaced_devices(self):
-        """
-        Delegate to :class:`andes.system.dae_compactor.DAECompactor`.
-        """
-        return self.dae_compactor._detect_replaced_devices()
-
-    def _build_y_compaction_map(self, excluded):
-        """
-        Delegate to :class:`andes.system.dae_compactor.DAECompactor`.
-        """
-        return self.dae_compactor._build_y_compaction_map(excluded)
-
-    def _compact_dae_y(self, old_to_new, new_m, need_sink,
-                       all_replaced_models):
-        """
-        Delegate to :class:`andes.system.dae_compactor.DAECompactor`.
-        """
-        return self.dae_compactor._compact_dae_y(old_to_new, new_m, need_sink,
-                                                 all_replaced_models)

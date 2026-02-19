@@ -90,7 +90,7 @@ class CodegenManager:
         t0, _ = elapsed()
 
         # consistency check for group parameters and variables
-        system.check_group_common()
+        system.registry.check_group_common()
 
         # get `pycode` folder path without automatic creation
         pycode_path = get_pycode_path(system.options.get("pycode_path"), mkdir=False)

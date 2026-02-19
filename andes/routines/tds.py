@@ -218,7 +218,7 @@ class TDS(BaseRoutine):
 
         system.init(system.exist.tds, routine='tds')
 
-        system.compact_dae()
+        system.dae_compactor.compact_dae()
 
         # propagate after compact_dae so that ue reflects replacement u=0
         system.propagate_init_status()
@@ -852,7 +852,7 @@ class TDS(BaseRoutine):
 
         # check system connectivity if topology changed during switching
         if self.config.check_conn == 1 and system.conn._dirty:
-            system.connectivity(info=False)
+            system.conn.check_connectivity(info=False)
 
         return ret
 
