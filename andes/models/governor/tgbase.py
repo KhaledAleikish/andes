@@ -46,7 +46,7 @@ class TGBase(Model):
 
     """
 
-    _setpoints = {'pref': 'pref0'}
+    _setpoints = {'pref': 'pref0', 'paux': 'paux0'}
 
     def __init__(self, system, config, add_sn=True, add_tm0=True):
         Model.__init__(self, system, config)

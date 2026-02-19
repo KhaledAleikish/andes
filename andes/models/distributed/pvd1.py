@@ -212,6 +212,8 @@ class PVD1Model(Model):
     Model implementation of PVD1.
     """
 
+    _setpoints = {'pref': 'pref0', 'qref': 'qref0', 'paux': 'Pext0'}
+
     def __init__(self, system, config):
         Model.__init__(self, system, config)
         self.flags.tds = True
@@ -533,10 +535,17 @@ class PVD1(PVD1Data, PVD1Model):
 
     Frequency and voltage recovery latching is yet to be implemented.
 
-    Modifications to the active and reactive power references,
-    typically by an external scheduling program, should
-    write to `pref0.v` and `qref0.v` in place.
-    AGC signals should write to `pext0.v` in place.
+    The recommended approach for modifying setpoints is the group-level API,
+    which works uniformly across all DG models:
+
+    .. code:: python
+
+        ss.DG.set_pref(ss, dev_idx, value)    # writes to pref0
+        ss.DG.set_qref(ss, dev_idx, value)    # writes to qref0
+        ss.DG.set_paux(ss, dev_idx, value)    # writes to Pext0 (AGC signal)
+
+    For advanced usage, direct in-place array assignment is also supported
+    (e.g., ``ss.PVD1.pref0.v[:] = new_values``).
 
     Maximum power limit `pmx` can be disabled by editing the configuration
     file by setting `plim=0`. It cannot be modified in runtime.

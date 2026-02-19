@@ -998,6 +998,7 @@ class SynGen(GroupBase):
     _setpoint_priority = {
         'pref': [('TurbineGov', 'syn')],
         'vref': [('Exciter', 'syn')],
+        'paux': [('TurbineGov', 'syn')],
     }
 
     def __init__(self):
@@ -1050,6 +1051,26 @@ class SynGen(GroupBase):
         Get voltage reference. See :meth:`set_vref` for semantics.
         """
         return self.get_setpoint(system, idx, 'vref')
+
+    def set_paux(self, system, idx, value):
+        """
+        Set auxiliary power input for a synchronous generator.
+
+        Routes to the turbine governor's ``paux0``.  Raises
+        ``KeyError`` if no governor is connected (generators do not
+        have an auxiliary power input on their own).
+
+        The auxiliary signal is additive to the power reference inside
+        the governor equations.  The value is in system-base per-unit.
+        Commonly used for AGC signals or reinforcement-learning inputs.
+        """
+        self.set_setpoint(system, idx, 'paux', value)
+
+    def get_paux(self, system, idx):
+        """
+        Get auxiliary power input. See :meth:`set_paux` for semantics.
+        """
+        return self.get_setpoint(system, idx, 'paux')
 
     def store_idx_island(self, bus_idx):
         """
@@ -1219,9 +1240,63 @@ class DG(GroupBase):
     ratio parameters.
     """
 
+    # No external controller chain; setpoints live on the device itself.
+    _setpoint_priority = {}
+
     def __init__(self):
         super().__init__()
         self.common_params.extend(('bus', 'fn'))
+
+    def set_pref(self, system, idx, value):
+        """
+        Set active power reference for a distributed generator.
+
+        Writes to the device's ``pref0`` directly.
+        The value is in system-base per-unit.
+        Use :meth:`get_pref` to read the current value before applying
+        incremental changes.
+        """
+        self.set_setpoint(system, idx, 'pref', value)
+
+    def get_pref(self, system, idx):
+        """
+        Get active power reference. See :meth:`set_pref` for semantics.
+        """
+        return self.get_setpoint(system, idx, 'pref')
+
+    def set_qref(self, system, idx, value):
+        """
+        Set reactive power reference for a distributed generator.
+
+        Writes to the device's ``qref0`` directly.
+        The value is in system-base per-unit.
+        Use :meth:`get_qref` to read the current value before applying
+        incremental changes.
+        """
+        self.set_setpoint(system, idx, 'qref', value)
+
+    def get_qref(self, system, idx):
+        """
+        Get reactive power reference. See :meth:`set_qref` for semantics.
+        """
+        return self.get_setpoint(system, idx, 'qref')
+
+    def set_paux(self, system, idx, value):
+        """
+        Set auxiliary power input for a distributed generator.
+
+        Writes to the device's ``Pext0`` (external power signal).
+        The auxiliary signal is additive to the power reference inside
+        the model equations. Commonly used for AGC signals.
+        The value is in system-base per-unit.
+        """
+        self.set_setpoint(system, idx, 'paux', value)
+
+    def get_paux(self, system, idx):
+        """
+        Get auxiliary power input. See :meth:`set_paux` for semantics.
+        """
+        return self.get_setpoint(system, idx, 'paux')
 
 
 class DGProtection(GroupBase):
