@@ -11,10 +11,14 @@ Registry loading helpers for System.
 
 import importlib
 import inspect
+import logging
+
 import andes.models
 from andes.models import file_classes
 from andes.models.group import GroupBase
 from andes.routines import all_routines
+
+logger = logging.getLogger(__name__)
 
 
 class RegistryLoader:
@@ -25,11 +29,17 @@ class RegistryLoader:
     def __init__(self, system):
         self.system = system
 
+    # Deprecated group aliases: old_name -> new_name
+    _GROUP_ALIASES = {
+        'ACTopology': 'ACNode',
+    }
+
     def load_all(self):
         """
         Load groups, models and routines in dependency order.
         """
         self.import_groups()
+        self._add_group_aliases()
         self.import_models()
         self.import_routines()  # routine imports come after models
 
@@ -82,6 +92,21 @@ class RegistryLoader:
 
             system.__dict__[name] = cls()
             system.groups[name] = system.__dict__[name]
+
+    def _add_group_aliases(self):
+        """
+        Add deprecated group name aliases that point to renamed groups.
+
+        Each alias shares the same group instance as the new name,
+        so models registered under the new name are visible via either.
+        """
+        system = self.system
+        for old_name, new_name in self._GROUP_ALIASES.items():
+            if new_name in system.groups and old_name not in system.groups:
+                system.__dict__[old_name] = system.__dict__[new_name]
+                system.groups[old_name] = system.groups[new_name]
+                logger.debug("Registered deprecated group alias %s -> %s",
+                             old_name, new_name)
 
     def import_models(self):
         """

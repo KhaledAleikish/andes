@@ -2,14 +2,13 @@
 System package.
 """
 
-from andes.system.facade import (  # noqa: F401
-    ExistingModels,
-    System,
+from andes.system.facade import ExistingModels, System  # noqa: F401
+from andes.system.helpers import (  # noqa: F401
+    _config_numpy,
     example,
     fix_view_arrays,
     import_pycode,
     load_config_rc,
-    _config_numpy,
 )
 
 __all__ = ["System", "ExistingModels", "example", "fix_view_arrays",

@@ -11,6 +11,7 @@ System class for power system data and methods.
 #
 #  File name: system/facade.py
 
+import configparser
 import logging
 import warnings
 from collections import OrderedDict, defaultdict
@@ -24,6 +25,7 @@ from andes.shared import NCPUS_PHYSICAL, jac_names, np, spmatrix
 from andes.system.codegen import CodegenManager
 from andes.system.config_runtime import SystemConfigRuntime
 from andes.system.dae_compactor import DAECompactor
+from andes.system.helpers import _set_hi_name, _set_xy_name, _set_z_name
 from andes.system.registry import RegistryLoader
 from andes.utils.misc import elapsed
 from andes.utils.tab import Tab
@@ -150,15 +152,62 @@ class System:
 
     def _update_config_object(self):
         """
-        Deprecated wrapper to :class:`andes.system.config_runtime.SystemConfigRuntime`.
+        Change config on the fly based on command-line options.
+
+        .. deprecated:: 2.0
+            Use ``system.config_runtime.update_config_object()`` instead.
+            This method will be removed in v3.0.
         """
+        if hasattr(self, 'config_runtime'):
+            return self.config_runtime.update_config_object()
+
+        # --- Fallback for subclasses that do not call super().__init__() ---
         warnings.warn(
-            "System._update_config_object() is deprecated and will be removed in v3.0. "
-            "Use system.config_runtime.update_config_object() instead.",
-            DeprecationWarning,
+            "System._update_config_object() is deprecated and will be removed "
+            "in v3.0.  Subclasses should migrate to "
+            "system.config_runtime.update_config_object().",
+            FutureWarning,
             stacklevel=2,
         )
-        return self.config_runtime.update_config_object()
+
+        config_option = self.options.get('config_option', None)
+        if config_option is None:
+            return
+
+        if len(config_option) == 0:
+            return
+
+        newobj = False
+        if self._config_object is None:
+            self._config_object = configparser.ConfigParser()
+            newobj = True
+
+        for item in config_option:
+            if item.count('=') != 1:
+                raise ValueError(
+                    'config_option "{}" must be an assignment expression'.format(item))
+
+            field, value = item.split("=")
+
+            if field.count('.') != 1:
+                raise ValueError(
+                    'config_option left-hand side "{}" must use '
+                    'format SECTION.FIELD'.format(field))
+
+            section, key = field.split(".")
+            section = section.strip()
+            key = key.strip()
+            value = value.strip()
+
+            if not newobj:
+                self._config_object.set(section, key, value)
+                logger.debug("Existing config option set: %s.%s=%s",
+                             section, key, value)
+            else:
+                self._config_object.add_section(section)
+                self._config_object.set(section, key, value)
+                logger.debug("New config option added: %s.%s=%s",
+                             section, key, value)
 
     def reload(self, case, **kwargs):
         """
@@ -2126,172 +2175,3 @@ class System:
         """
         return self.dae_compactor._compact_dae_y(old_to_new, new_m, need_sink,
                                                  all_replaced_models)
-
-
-# --------------- Helper Functions ---------------
-
-def _config_numpy(seed='None', divide='warn', invalid='warn'):
-    """
-    Backward-compatible wrapper to
-    :meth:`andes.system.config_runtime.SystemConfigRuntime.configure_numpy`.
-    """
-    warnings.warn(
-        "andes.system.facade._config_numpy() is deprecated and will be removed in v3.0. "
-        "Use andes.system.config_runtime.SystemConfigRuntime.configure_numpy() instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    return SystemConfigRuntime.configure_numpy(seed=seed,
-                                               divide=divide,
-                                               invalid=invalid)
-
-
-def load_config_rc(conf_path=None):
-    """
-    Backward-compatible wrapper to
-    :meth:`andes.system.config_runtime.SystemConfigRuntime.load_config_rc`.
-    """
-    warnings.warn(
-        "andes.system.facade.load_config_rc() is deprecated and will be removed in v3.0. "
-        "Use andes.system.config_runtime.SystemConfigRuntime.load_config_rc() instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    return SystemConfigRuntime.load_config_rc(conf_path=conf_path)
-
-
-def fix_view_arrays(system, models=None):
-    """
-    Point NumPy arrays without OWNDATA (termed "view arrays" here) to the source
-    array.
-
-    This function properly sets ``v`` and ``e`` arrays of internal variables as
-    views of the corresponding DAE arrays.
-
-    Inputs will be refreshed for each model.
-
-    Parameters
-    ----------
-    system : andes.system.System
-        System object to be fixed
-    models : OrderedDict, optional
-        Subset of models to fix.  Defaults to ``system.models`` (all models).
-    """
-
-    if models is None:
-        models = system.models
-
-    system.set_var_arrays(models)
-
-    for model in models.values():
-        if model.n > 0:
-            model.get_inputs(refresh=True)
-
-    return True
-
-
-def import_pycode(user_pycode_path=None):
-    """
-    Backward-compatible wrapper to :func:`andes.system.codegen.import_pycode`.
-    """
-    from andes.system.codegen import import_pycode as _import_pycode
-    return _import_pycode(user_pycode_path=user_pycode_path)
-
-
-def _import_pycode_from(pycode_path):
-    """
-    Backward-compatible wrapper to :func:`andes.system.codegen._import_pycode_from`.
-    """
-    from andes.system.codegen import _import_pycode_from as _import_pycode_from_impl
-    return _import_pycode_from_impl(pycode_path)
-
-
-def reload_submodules(module_name):
-    """
-    Backward-compatible wrapper to :func:`andes.system.codegen.reload_submodules`.
-    """
-    from andes.system.codegen import reload_submodules as _reload_submodules
-    return _reload_submodules(module_name)
-
-
-def _append_model_name(model_name, idx):
-    """
-    Helper function for appending ``idx`` to model names.
-    Removes duplicate model name strings.
-    """
-
-    out = ''
-    if isinstance(idx, str) and (model_name in idx):
-        out = idx
-    else:
-        out = f'{model_name} {idx}'
-
-    # replaces `_` with space for LaTeX to continue
-    out = out.replace('_', ' ')
-    return out
-
-
-def _set_xy_name(mdl, vars_dict, dests):
-    """
-    Helper function for setting algebraic and state variable names.
-    """
-
-    mdl_name = mdl.class_name
-    idx = mdl.idx
-    for name, item in vars_dict.items():
-        for idx_item, addr in zip(idx.v, item.a):
-            dests[0][addr] = f'{name} {_append_model_name(mdl_name, idx_item)}'
-            dests[1][addr] = rf'${item.tex_name}$ {_append_model_name(mdl_name, idx_item)}'
-
-
-def _set_hi_name(mdl, vars_dict, dests):
-    """
-    Helper function for setting names of external equations.
-    """
-
-    mdl_name = mdl.class_name
-    idx = mdl.idx
-    for item in vars_dict.values():
-        if len(item.r) != len(idx.v):
-            idxall = item.indexer.v
-        else:
-            idxall = idx.v
-
-        for idx_item, addr in zip(idxall, item.r):
-            dests[0][addr] = f'{item.ename} {_append_model_name(mdl_name, idx_item)}'
-            dests[1][addr] = rf'${item.tex_ename}$ {_append_model_name(mdl_name, idx_item)}'
-
-
-def _set_z_name(mdl, dae, dests):
-    """
-    Helper function for addng and setting discrete flag names.
-    """
-
-    for item in mdl.discrete.values():
-        if mdl.flags.initialized:
-            continue
-        mdl_name = mdl.class_name
-
-        for name, tex_name in zip(item.get_names(), item.get_tex_names()):
-            for idx_item in mdl.idx.v:
-                dests[0].append(f'{name} {_append_model_name(mdl_name, idx_item)}')
-                dests[1].append(rf'${item.tex_name}$ {_append_model_name(mdl_name, idx_item)}')
-                dae.o += 1
-
-
-def example(setup=True, no_output=True, **kwargs):
-    """
-    Return an :py:class:`andes.system.System` object for the
-    ``ieee14_linetrip.xlsx`` as an example.
-
-    This function is useful when a user wants to quickly get a
-    System object for testing.
-
-    Returns
-    -------
-    System
-        An example :py:class:`andes.system.System` object.
-    """
-
-    return andes.load(andes.get_case("ieee14/ieee14_linetrip.xlsx"),
-                      setup=setup, no_output=no_output, **kwargs)

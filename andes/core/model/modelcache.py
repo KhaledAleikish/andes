@@ -39,6 +39,16 @@ class ModelCache:
         self._callbacks = {}
         self._owner = None
 
+    def _resolve_deprecated(self, item):
+        """Compute the value for a deprecated cache field."""
+        if self._owner is None:
+            return None
+        vin = item.endswith('_in')
+        if item.startswith('dict'):
+            return self._owner.as_dict(vin=vin)
+        else:
+            return self._owner.as_df(vin=vin)
+
     def __getattr__(self, item):
         if item == "_callbacks":
             return self.__getattribute__(item)
@@ -51,12 +61,7 @@ class ModelCache:
                 FutureWarning,
                 stacklevel=2,
             )
-            if self._owner is not None:
-                vin = item.endswith('_in')
-                if item.startswith('dict'):
-                    return self._owner.as_dict(vin=vin)
-                else:
-                    return self._owner.as_df(vin=vin)
+            return self._resolve_deprecated(item)
 
         if item in self._callbacks:
             val = self._call(item)
@@ -124,11 +129,31 @@ class ModelCache:
         if name is None:
             for name in self._callbacks.keys():
                 self.__dict__[name] = self._call(name)
+            # also evict any stale deprecated fields so __getattr__ recomputes
+            for dep in self._DEPRECATED_FIELDS:
+                self.__dict__.pop(dep, None)
         elif isinstance(name, str):
-            self.__dict__[name] = self._call(name)
+            self._refresh_one(name)
         elif isinstance(name, list):
             for n in name:
-                self.__dict__[n] = self._call(n)
+                self._refresh_one(n)
+
+    def _refresh_one(self, name):
+        """Refresh a single cache field, including deprecated fields."""
+        if name in self._callbacks:
+            self.__dict__[name] = self._call(name)
+        elif name in self._DEPRECATED_FIELDS:
+            replacement = self._DEPRECATED_FIELDS[name]
+            warnings.warn(
+                f"'cache.refresh(\"{name}\")' is deprecated and will be "
+                f"removed in v3.0.0. Use 'model.{replacement}' instead.",
+                FutureWarning,
+                stacklevel=3,
+            )
+            # evict so next access goes through __getattr__
+            self.__dict__.pop(name, None)
+        else:
+            self.__dict__[name] = self._call(name)
 
     def _call(self, name):
         """
