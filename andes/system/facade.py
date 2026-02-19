@@ -272,6 +272,7 @@ class System:
 
         self.find_devices()    # find or add required devices
         self._report_param_corrections()
+        self._check_setpoints()
 
         # === no device addition or removal after this point ===
         self.calc_pu_coeff()   # calculate parameters in system per units
@@ -1931,6 +1932,33 @@ class System:
         """
         for mdl in self.models.values():
             mdl.report_corrections()
+
+    def _check_setpoints(self):
+        """
+        Validate ``_setpoints`` declarations on all models.
+
+        For every model that declares a ``_setpoints`` dict, verify that
+        each target attribute exists on the model and has a ``.v`` member.
+        Called once during :meth:`setup`.
+        """
+        for mdl_name, mdl in self.models.items():
+            sp_map = getattr(mdl, '_setpoints', None)
+            if not sp_map:
+                continue
+            for sp_name, attr_name in sp_map.items():
+                attr = mdl.__dict__.get(attr_name)
+                if attr is None:
+                    raise AttributeError(
+                        f"Model <{mdl.class_name}> declares _setpoints"
+                        f"['{sp_name}'] = '{attr_name}', but attribute"
+                        f" '{attr_name}' does not exist."
+                    )
+                if not hasattr(attr, 'v'):
+                    raise AttributeError(
+                        f"Model <{mdl.class_name}> declares _setpoints"
+                        f"['{sp_name}'] = '{attr_name}', but '{attr_name}'"
+                        f" has no '.v' array."
+                    )
 
     def set_config(self, config=None):
         """

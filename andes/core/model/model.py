@@ -57,6 +57,27 @@ class Model:
         {name: instance} of numerical parameters, including internal and
         external ones
 
+    _setpoints : dict, optional
+        Class-level dict mapping setpoint names to model attribute names.
+        Used by ``GroupBase.set_setpoint()`` / ``get_setpoint()`` and
+        their convenience wrappers (``set_pref``, ``get_vref``, etc.)
+        to resolve which attribute to read/write.
+
+        Keys are arbitrary strings (common ones: ``'pref'``, ``'vref'``,
+        ``'qref'``).  Values must be names of attributes on the model
+        that have a ``.v`` array (typically ``ConstService`` or
+        ``PostInitService``).
+
+        The group's ``_setpoint_priority`` dict controls controller-chain
+        resolution — see ``GroupBase._resolve_setpoint`` for details.
+
+        Validated during ``System.setup()``.  A typo in the target name
+        will raise an error at load time.
+
+        Example (governor base class)::
+
+            _setpoints = {'pref': 'pref0'}
+
     Examples
     --------
     Take the static PQ as an example, the subclass of `Model`, `PQ`, should look

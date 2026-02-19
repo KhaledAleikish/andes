@@ -363,6 +363,38 @@ class Documenter:
                               plain_dict=plain_dict,
                               rest_dict=rest_dict)
 
+    def _setpoint_doc(self, max_width=78, export='plain'):
+        """
+        Document the setpoints declared by this model via ``_setpoints``.
+        """
+        sp_map = getattr(self.parent, '_setpoints', None)
+        if not sp_map:
+            return ''
+
+        names, targets, info_list = list(), list(), list()
+
+        for sp_name, attr_name in sp_map.items():
+            names.append(sp_name)
+            targets.append(attr_name)
+            attr = self.parent.__dict__.get(attr_name)
+            info_list.append(attr.info if attr and getattr(attr, 'info', None) else '')
+
+        title = 'Setpoints'
+        if export == 'rest':
+            title = 'Setpoints\n----------'
+
+        plain_dict = OrderedDict([('Name', names),
+                                  ('Target', targets),
+                                  ('Info', info_list)])
+
+        rest_dict = plain_dict
+
+        return make_doc_table(title=title,
+                              max_width=max_width,
+                              export=export,
+                              plain_dict=plain_dict,
+                              rest_dict=rest_dict)
+
     def get(self, max_width=78, export='plain'):
         """
         Return the model documentation in table-formatted string.
@@ -404,6 +436,7 @@ class Documenter:
         out += self._service_doc(max_width=max_width, export=export)
         out += self._discrete_doc(max_width=max_width, export=export)
         out += self._block_doc(max_width=max_width, export=export)
+        out += self._setpoint_doc(max_width=max_width, export=export)
         out += self.config.doc(max_width=max_width, export=export)
 
         return out
