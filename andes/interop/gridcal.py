@@ -8,11 +8,8 @@ import logging
 from functools import wraps
 
 import numpy as np
-import matplotlib
 
 from andes.shared import GridCal_Engine as gc
-
-matplotlib.use('agg')
 logger = logging.getLogger(__name__)
 
 
