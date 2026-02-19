@@ -2,7 +2,7 @@
 System class for power system data and methods.
 """
 
-#  [ANDES] (C)2015-2024 Hantao Cui
+#  [ANDES] (C)2015-2026 Hantao Cui
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -1931,7 +1931,7 @@ class System:
 
     def _p_restore(self):
         """
-        Restore parameters stored in `pin`.
+        Restore parameters stored in `vin`.
         """
         for model in self.models.values():
             for param in model.num_params.values():
