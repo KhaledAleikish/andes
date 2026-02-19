@@ -6,6 +6,7 @@ import logging
 import numpy as np
 
 from andes.shared import sparse, matrix, tqdm
+from andes.routines.qndf import QNDF
 
 
 logger = logging.getLogger(__name__)
@@ -320,4 +321,5 @@ class Trapezoid(ImplicitIter):
 
 method_map = {"trapezoid": Trapezoid,
               "backeuler": BackEuler,
+              'qndf': QNDF,
               }

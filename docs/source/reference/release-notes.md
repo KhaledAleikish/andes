@@ -68,6 +68,16 @@ State estimation:
   algorithms.
 - Raise default ``max_iter`` from 20 to 100 for IRLS convergence.
 
+Time-domain simulation:
+
+- Add QNDF variable-order (1–5) quasi-constant-step NDF integration method
+  (Shampine & Reichelt 1997, equivalent to MATLAB ``ode15s`` / Julia ``QNDF()``).
+  Select with ``ss.TDS.config.method = 'qndf'``. Features error-based adaptive
+  step control with ``abstol``/``reltol`` tolerances, automatic order selection,
+  D-table rescaling, and event-aware cache reset.
+- Add ``dtmax`` TDS config parameter to explicitly cap the maximum step size for
+  variable-step methods (``0`` = auto from frequency and time span).
+
 PSS/E parser:
 
 - Refactor RAW parser to a data-driven architecture with PSS/E v34 support.

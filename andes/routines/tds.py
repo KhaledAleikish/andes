@@ -11,6 +11,7 @@ from collections import OrderedDict
 
 from andes.routines.base import BaseRoutine
 from andes.routines.daeint import Trapezoid, method_map
+from andes.routines.qndf import QNDFCache
 from andes.routines.criteria import deltadelta
 from andes.shared import get_tqdm, matrix, np, pd, spdiag, tqdm, tqdm_nb
 from andes.utils.misc import elapsed, is_interactive, is_notebook
@@ -59,6 +60,9 @@ class TDS(BaseRoutine):
                                      ('no_tqdm', 0),
                                      ('chatter_iter', 4),
                                      ('linesearch', 1),
+                                     ('dtmax', 0),
+                                     ('abstol', 1e-6),
+                                     ('reltol', 1e-3),
                                      )))
         self.config.add_extra("_help",
                               method='DAE solution method',
@@ -90,6 +94,9 @@ class TDS(BaseRoutine):
                               no_tqdm='disable tqdm progressbar',
                               chatter_iter='minimum iterations to detect chattering',
                               linesearch='nonmonotone backtracking line search',
+                              dtmax='maximum step size (0 = auto from freq and tspan)',
+                              abstol='absolute tolerance for QNDF LTE estimation (ignored by trapezoid/backeuler)',
+                              reltol='relative tolerance for QNDF LTE estimation (ignored by trapezoid/backeuler)',
                               )
         self.config.add_extra("_alt",
                               method=tuple(method_map.keys()),
@@ -120,6 +127,9 @@ class TDS(BaseRoutine):
                               no_tqdm=(0, 1),
                               chatter_iter='int>=4',
                               linesearch=(0, 1),
+                              dtmax='>=0',
+                              abstol='float',
+                              reltol='float',
                               )
 
         # overwrite `tf` from command line
@@ -174,6 +184,7 @@ class TDS(BaseRoutine):
         self.ys = None
         self.Ac = None
         self.inc = None
+        self.qndf_cache = None
 
         # set DAE solver
         self.method = Trapezoid()
@@ -197,6 +208,7 @@ class TDS(BaseRoutine):
             return system.dae.xy
 
         self.reset()
+        self.set_method(self.config.method)
         self._load_pert()
 
         # restore power flow solutions
@@ -244,6 +256,14 @@ class TDS(BaseRoutine):
         # Build mass matrix into `self.Teye`
         self.Teye = spdiag(system.dae.Tf.tolist())
         self.qg = np.zeros(system.dae.n + system.dae.m)
+
+        if self.qndf_cache is None and self.config.method == 'qndf':
+            if system.dae.n == 0:
+                raise RuntimeError(
+                    "QNDF requires at least one differential equation (dae.n > 0). "
+                    "Use 'trapezoid' or 'backeuler' for algebraic-only systems.")
+            self.qndf_cache = QNDFCache(
+                n=system.dae.n, abstol=self.config.abstol, reltol=self.config.reltol)
 
         self.initialized = True
 
@@ -545,7 +565,10 @@ class TDS(BaseRoutine):
 
     def itm_step(self):
         """
-        Integrate for the step size of ``self.h`` using implicit trapezoid method.
+        Integrate one step of size ``self.h`` using the configured DAE method.
+
+        Delegates to ``self.method.step(self)`` where ``self.method`` is set by
+        ``set_method()``.
 
         Returns
         -------
@@ -597,6 +620,15 @@ class TDS(BaseRoutine):
         # t=0, first iteration (not previously failed), or resumed simulation
         if (system.dae.t == 0 and self.niter == 0) or resume:
             self.deltat = self._calc_h_first()
+
+        elif self.qndf_cache is not None:
+            # QNDF's step() already set self.deltat via error controller.
+            # Only need to validate minimum bound on failure.
+            if not self.converged:
+                if self.deltat < self.deltatmin:
+                    self.deltat = 0
+                    self.busted = True
+                    self.err_msg = "Step size below minimum after QNDF rejection."
 
         elif config.fixt and not config.shrinkt and (not self.converged):
             self.deltat = 0
@@ -697,6 +729,12 @@ class TDS(BaseRoutine):
             if config.tstep > self.deltatmax:
                 logger.debug('Increased deltatmax to tstep=%g.', config.tstep)
                 self.deltatmax = config.tstep
+
+        # Explicit dtmax overrides the auto-computed deltatmax
+        if config.dtmax > 0:
+            self.deltatmax = config.dtmax
+            self.deltat = min(self.deltat, self.deltatmax)
+            self.deltatmin = min(self.deltatmin, self.deltatmax / 20)
 
         # if from CSV, determine `deltat` from data
         if self.data_csv is not None:
@@ -869,6 +907,9 @@ class TDS(BaseRoutine):
         # check system connectivity if topology changed during switching
         if self.config.check_conn == 1 and system.conn._dirty:
             system.conn.check_connectivity(info=False)
+
+        if ret and self.qndf_cache is not None:
+            self.qndf_cache.reset_for_event(system.dae.x[:system.dae.n])
 
         return ret
 
@@ -1082,6 +1123,7 @@ class TDS(BaseRoutine):
         self.plotter = None
         self.plt = None             # short name for `plotter`
 
+        self.qndf_cache = None
         self.initialized = False
 
     def rewind(self, t):
@@ -1130,11 +1172,19 @@ class TDS(BaseRoutine):
         """
 
         if name not in method_map:
-            logger.error('"%s" is not a registered dae method name. " \
-                         "Falling back to trapezoid.', name)
+            logger.error('"%s" is not a registered dae method name. '
+                         'Falling back to trapezoid.', name)
             name = 'trapezoid'
 
         self.method = method_map[name]()
+        self.config.method = name
+
+        if name == 'qndf' and self.config.fixt:
+            logger.info("QNDF method requires variable step size; setting fixt=0.")
+            self.config.fixt = 0
+
+        if name != 'qndf':
+            self.qndf_cache = None
 
     def check_criteria(self):
         """
