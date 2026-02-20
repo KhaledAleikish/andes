@@ -75,8 +75,19 @@ Time-domain simulation:
   Select with ``ss.TDS.config.method = 'qndf'``. Features error-based adaptive
   step control with ``abstol``/``reltol`` tolerances, automatic order selection,
   D-table rescaling, and event-aware cache reset.
+- Add ``trap_adapt`` adaptive trapezoidal integration method with step-doubling
+  Richardson extrapolation for local truncation error (LTE) estimation. Select
+  with ``ss.TDS.config.method = 'trap_adapt'``. Features ``abstol``/``reltol``
+  error control, no-LTE recovery mode near events, and automatic ``fixt=0``
+  override.
 - Add ``dtmax`` TDS config parameter to explicitly cap the maximum step size for
   variable-step methods (``0`` = auto from frequency and time span).
+- Refactor step-size control into polymorphic ``calc_h()`` on each integration
+  method class, replacing the monolithic if/elif/else chain in ``TDS.calc_h``.
+  Extract shared niter-based heuristic into ``ImplicitIter.niter_next_h()``
+  and shared adaptive bust-check into ``check_adaptive_bust()``.
+- Add ``requires_variable_step`` class attribute to integration methods,
+  replacing the removed ``adaptive`` flag.
 
 PSS/E parser:
 
