@@ -302,14 +302,14 @@ class ModelEvaluator:
         if model._all_replaced:
             return
 
-        # store model-level user-defined Jacobians
-        if model.flags.j_num is True:
-            model.j_numeric()
+        # store model-level user-defined Jacobian pattern and constants
+        if model.flags.j_setup is True:
+            model.j_setup()
 
-        # store and merge user-defined Jacobians in blocks
+        # store and merge user-defined Jacobian pattern and constants in blocks
         for instance in model.blocks.values():
-            if instance.flags.j_num is True:
-                instance.j_numeric()
+            if instance.flags.j_setup is True:
+                instance.j_setup()
                 model.triplets.merge(instance.triplets)
 
         # for all combinations of Jacobian names (fx, fxc, gx, gxc, etc.)
@@ -441,6 +441,9 @@ class ModelEvaluator:
 
         Values are stored to ``Model.triplets[jname]``, where ``jname`` is a jacobian name.
 
+        This method first evaluates code-generated Jacobian lambdas, then calls
+        user-defined ``j_numeric`` for models/blocks with ``flags.j_num = True``.
+
         Returns
         -------
         None
@@ -461,6 +464,15 @@ class ModelEvaluator:
                                  model.class_name, jname, idx, row_name, col_name)
 
                     raise e
+
+        # user-defined per-iteration numerical Jacobian updates
+        kwargs = self.get_inputs()
+        if model.flags.j_num is True:
+            model.j_numeric(**kwargs)
+
+        for instance in model.blocks.values():
+            if instance.flags.j_num is True:
+                instance.j_numeric(**kwargs)
 
     def e_clear(self):
         """

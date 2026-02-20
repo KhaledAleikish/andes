@@ -38,7 +38,7 @@ class ModelData:
 
     flags : dict
         Flags to control the routine and functions that get called. If the model is using user-defined
-        numerical calls, set `f_num`, `g_num` and `j_num` properly.
+        numerical calls, set `f_num`, `g_num`, `j_num`, and `j_setup` properly.
 
     Notes
     -----

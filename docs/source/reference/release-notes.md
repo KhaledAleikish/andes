@@ -36,6 +36,11 @@ Modeling framework changes:
 - Add pre-evaluation of discrete flags before the initialization pass.
 - Add nonmonotone backtracking line search to the Newton-Raphson solver in both
   PFlow and TDS for improved convergence robustness.
+- Separate `j_numeric` into two hooks: `j_setup` (one-time sparsity pattern and
+  constant Jacobian registration, called by `store_sparse_pattern`) and `j_numeric`
+  (per-iteration numerical Jacobian update, called by `j_update`, parallel to
+  `g_numeric`/`f_numeric`). Add `flags.j_setup` for the former; `flags.j_num` now
+  controls the per-iteration hook.
 
 Model changes:
 

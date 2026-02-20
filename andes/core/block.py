@@ -137,7 +137,7 @@ class Block:
         self.owner = None
         self.vars = OrderedDict()
         self.triplets = JacTriplet()
-        self.flags = ModelFlags()  # f_num, g_num and j_num can be set
+        self.flags = ModelFlags()  # f_num, g_num, j_num and j_setup can be set
 
     def __setattr__(self, key, value):
         """
@@ -177,7 +177,7 @@ class Block:
         Helper function to clear the lists holding the numerical Jacobians.
 
         This function should be only called once at the beginning of
-        ``j_numeric`` in blocks.
+        ``j_setup`` in blocks.
         """
         self.triplets.clear_ijv()
 
@@ -277,15 +277,28 @@ class Block:
         """
         pass
 
-    def j_numeric(self):
+    def j_setup(self):
         """
-        This function stores the constant and variable jacobian information in corresponding lists.
+        One-time Jacobian sparsity pattern and constant value setup.
 
-        Constant jacobians are stored by indices and values in, for example, `ifxc`, `jfxc` and `vfxc`.
-        Value scalars or arrays are stored in `vfxc`.
+        Called once by ``store_sparse_pattern`` during system setup.
+        Use ``triplets.append_ijv`` with the ``'c'`` suffix (e.g., ``'gyc'``)
+        for constant Jacobians, or without the suffix for variable entries
+        whose values will be updated per iteration by ``j_numeric``.
 
-        Variable jacobians are stored by indices and functions. The function shall return the value of the
-        corresponding jacobian elements.
+        Requires ``flags.j_setup = True``.
+        """
+        pass
+
+    def j_numeric(self, **kwargs):
+        """
+        Per-iteration numerical Jacobian update.
+
+        Called every Newton iteration by ``j_update``, parallel to
+        ``g_numeric`` / ``f_numeric``.  Update variable Jacobian triplet
+        values **in-place**.
+
+        Requires ``flags.j_num = True``.
         """
         pass
 
@@ -759,7 +772,7 @@ class PIControllerNumeric(Block):
         self.y = Algeb(info="PI output")
 
         self.vars = {'xi': self.xi, 'y': self.y}
-        self.flags.update({'f_num': True, 'g_num': True, 'j_num': True})
+        self.flags.update({'f_num': True, 'g_num': True, 'j_setup': True})
 
     def g_numeric(self, **kwargs):
         self.y.e = self.kp.v * (self.u.v - self.ref.v) + self.xi.v - self.y.v
@@ -767,7 +780,7 @@ class PIControllerNumeric(Block):
     def f_numeric(self, **kwargs):
         self.xi.e = self.ki.v * (self.u.v - self.ref.v)
 
-    def j_numeric(self):
+    def j_setup(self):
         self.j_reset()
         self.triplets.append_ijv('fyc', self.xi.id, self.u.id, self.ki.v)
         self.triplets.append_ijv('gyc', self.y.id, self.u.id, self.kp.v)

@@ -1051,12 +1051,29 @@ class Model:
         """
         pass
 
+    def j_setup(self, **kwargs):
+        """
+        One-time Jacobian sparsity pattern and constant value setup.
+
+        Called once by ``store_sparse_pattern`` during system setup.
+        Use ``triplets.append_ijv`` with the ``'c'`` suffix (e.g., ``'gyc'``)
+        for constant Jacobians that are baked into ``dae.tpl``, or without
+        the suffix (e.g., ``'gy'``) for variable entries whose values will
+        be updated per iteration by ``j_numeric``.
+
+        Requires ``flags.j_setup = True``.
+        """
+        pass
+
     def j_numeric(self, **kwargs):
         """
-        Custom numeric update functions.
+        Per-iteration numerical Jacobian update.
 
-        This function should append indices to `_ifx`, `_jfx`, and append anonymous functions to `_vfx`.
-        It is only called once by `store_sparse_pattern`.
+        Called every Newton iteration by ``j_update``, parallel to
+        ``g_numeric`` / ``f_numeric``.  Update variable Jacobian triplet
+        values **in-place** (the mutable arrays registered by ``j_setup``).
+
+        Requires ``flags.j_num = True``.
         """
         pass
 

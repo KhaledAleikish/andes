@@ -46,7 +46,10 @@ class ModelFlags:
     g_num : bool
         True if the model defines `g_numeric`
     j_num : bool
-        True if the model defines `j_numeric`
+        True if the model defines per-iteration `j_numeric`
+    j_setup : bool
+        True if the model defines one-time `j_setup` for Jacobian
+        sparsity pattern and constant values
     s_num : bool
         True if the model defines `s_numeric`
     sv_num : bool
@@ -59,7 +62,7 @@ class ModelFlags:
                  pflow_init=None, tds_init=None, series=False,
                  topo=False, ybus=False,
                  nr_iter=False, f_num=False, g_num=False, j_num=False,
-                 s_num=False, sv_num=False):
+                 j_setup=False, s_num=False, sv_num=False):
 
         self.collate = collate
         self.pflow = pflow
@@ -73,6 +76,7 @@ class ModelFlags:
         self.f_num = f_num
         self.g_num = g_num
         self.j_num = j_num
+        self.j_setup = j_setup
         self.s_num = s_num
         self.sv_num = sv_num
         self.sys_base = False
