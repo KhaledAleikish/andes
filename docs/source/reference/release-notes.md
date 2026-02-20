@@ -116,6 +116,16 @@ Refactoring:
   refreshers) as delegate wrappers to preserve call sites.
 - Move connectivity check into `ConnMan` and optimize.
 - Replace `ConnMan` bus propagation with declarative status framework.
+- Refactor `SystemConfigRuntime` into phased config resolution
+  (`load_rc` → `merge_file_config` → `apply_cli_overrides` → `finalize`) and
+  restructure `System.__init__` with `_init_managers` / `_init_models` helpers.
+
+I/O:
+
+- Add embedded configuration support: xlsx files gain a `_config` sheet and JSON
+  files gain a `_config` key, both using a `section`/`key`/`value` record format.
+  File-embedded config overrides `andes.rc` defaults but is itself overridden by
+  CLI `config_option`.
 - Route `u` changes through `set_status` and remove `Bus.set` override.
 - Replace `ModelCache` boilerplate with declarative registration.
 - Rewrite TDS init error diagnostics with limit clamping report and DAE

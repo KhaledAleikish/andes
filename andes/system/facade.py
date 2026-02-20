@@ -11,7 +11,6 @@ System class for power system data and methods.
 #
 #  File name: system/facade.py
 
-import configparser
 import logging
 import warnings
 from collections import OrderedDict, defaultdict
@@ -115,37 +114,55 @@ class System:
         self.n_switches = 0                  # number of elements in `self.switch_times`
         self.exit_code = 0                   # command-line exit code, 0 - normal, others - error.
 
+        # --- Config resolution (phased) ---
+        # Precedence: defaults < andes.rc < file _config < CLI config_option
         self.config_runtime = SystemConfigRuntime(self)
-        self.config_runtime.initialize(config=config,
-                                       config_path=config_path,
-                                       default_config=default_config)
+        self.config_runtime.load_rc(config_path=config_path,
+                                    default_config=default_config)
 
+        self.files = FileMan(case=case, **self.options)
+        self.config_runtime.merge_file_config(self.files)
+
+        self.config_runtime.apply_cli_overrides()
+        self.config_runtime.finalize(config=config)
+
+        # --- Managers ---
+        self._init_managers()
+
+        # --- Models, routines, and codegen ---
+        self._init_models(no_undill=no_undill, autogen_stale=autogen_stale)
+
+    def _init_managers(self):
+        """
+        Create internal manager objects (DAE, connectivity, registry, etc.).
+        """
         self.exist = ExistingModels()
+        self.dae = DAE(system=self)
+        self.streaming = Streaming(self)
+        self.conn = ConnMan(system=self)
+        self.registry = RegistryLoader(self)
+        self.codegen = CodegenManager(self)
+        self.dae_compactor = DAECompactor(self)
 
-        self.files = FileMan(case=case, **self.options)    # file path manager
-        self.dae = DAE(system=self)                        # numerical DAE storage
-        self.streaming = Streaming(self)                   # Dime2 streaming
-        self.conn = ConnMan(system=self)                   # connectivity manager
-        self.registry = RegistryLoader(self)               # model/group/routine loading
-        self.codegen = CodegenManager(self)                # symbolic code generation/loading
-        self.dae_compactor = DAECompactor(self)            # DAE algebraic compaction
-
-        # dynamic imports of groups, models and routines
+    def _init_models(self, no_undill=False, autogen_stale=True):
+        """
+        Import groups, models, and routines from the registry, then
+        optionally load generated code (undill).
+        """
         self.registry.load_all()
 
         self._getters = dict(f=list(), g=list(), x=list(), y=list())
         self._adders = dict(f=list(), g=list(), x=list(), y=list())
         self._setters = dict(f=list(), g=list(), x=list(), y=list())
         self.antiwindups = list()
-        self.no_check_init = list()  # states for which initialization check is omitted
-        self.call_stats = defaultdict(dict)  # call statistics storage
+        self.no_check_init = list()
+        self.call_stats = defaultdict(dict)
 
         # status propagation graph (built during setup)
-        self._status_children = {}     # parent_group -> set of child BackRef names
-        self._status_parent_map = {}   # child_model_name -> (param_attr_name, parent_group_name)
+        self._status_children = {}
+        self._status_parent_map = {}
 
-        # internal flags
-        self.is_setup = False        # if system has been setup
+        self.is_setup = False
 
         if not no_undill:
             self.undill(autogen_stale=autogen_stale)
@@ -155,59 +172,22 @@ class System:
         Change config on the fly based on command-line options.
 
         .. deprecated:: 2.0
-            Use ``system.config_runtime.update_config_object()`` instead.
+            Use ``system.config_runtime.apply_cli_overrides()`` instead.
             This method will be removed in v3.0.
         """
         if hasattr(self, 'config_runtime'):
-            return self.config_runtime.update_config_object()
+            return self.config_runtime.apply_cli_overrides()
 
-        # --- Fallback for subclasses that do not call super().__init__() ---
+        # Fallback for subclasses that do not call super().__init__().
         warnings.warn(
             "System._update_config_object() is deprecated and will be removed "
-            "in v3.0.  Subclasses should migrate to "
-            "system.config_runtime.update_config_object().",
+            "in v3.0.  Subclasses should call super().__init__() and use "
+            "system.config_runtime.apply_cli_overrides().",
             FutureWarning,
             stacklevel=2,
         )
 
-        config_option = self.options.get('config_option', None)
-        if config_option is None:
-            return
-
-        if len(config_option) == 0:
-            return
-
-        newobj = False
-        if self._config_object is None:
-            self._config_object = configparser.ConfigParser()
-            newobj = True
-
-        for item in config_option:
-            if item.count('=') != 1:
-                raise ValueError(
-                    'config_option "{}" must be an assignment expression'.format(item))
-
-            field, value = item.split("=")
-
-            if field.count('.') != 1:
-                raise ValueError(
-                    'config_option left-hand side "{}" must use '
-                    'format SECTION.FIELD'.format(field))
-
-            section, key = field.split(".")
-            section = section.strip()
-            key = key.strip()
-            value = value.strip()
-
-            if not newobj:
-                self._config_object.set(section, key, value)
-                logger.debug("Existing config option set: %s.%s=%s",
-                             section, key, value)
-            else:
-                self._config_object.add_section(section)
-                self._config_object.set(section, key, value)
-                logger.debug("New config option added: %s.%s=%s",
-                             section, key, value)
+        SystemConfigRuntime(self).apply_cli_overrides()
 
     def reload(self, case, **kwargs):
         """

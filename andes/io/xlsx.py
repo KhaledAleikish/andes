@@ -45,6 +45,7 @@ def write(system, outfile, skip_empty=True, overwrite=None, add_book=None, **kwa
         return False
 
     writer = pd.ExcelWriter(outfile, engine='xlsxwriter')
+    writer = _write_config(system, writer)
     writer = _write_system(system, writer, skip_empty)
     writer = _add_book(system, writer, add_book)
 
@@ -52,6 +53,19 @@ def write(system, outfile, skip_empty=True, overwrite=None, add_book=None, **kwa
 
     logger.info('xlsx file written to "%s"', outfile)
     return True
+
+
+def _write_config(system, writer):
+    """
+    Write the ``_config`` sheet with all active configuration values.
+
+    Each row has columns: ``section``, ``key``, ``value``.
+    """
+    rows = system.config_runtime.collect_config_rows()
+    if rows:
+        df = pd.DataFrame(rows, columns=['section', 'key', 'value'])
+        df.to_excel(writer, sheet_name='_config', index=False, freeze_panes=(1, 0))
+    return writer
 
 
 def _write_system(system, writer, skip_empty):
@@ -107,6 +121,9 @@ def read(system, infile):
                               )
 
     for name, df in df_models.items():
+        if name == '_config':
+            continue
+
         # drop rows that all nan
         df.dropna(axis=0, how='all', inplace=True)
         for row in df.to_dict(orient='records'):

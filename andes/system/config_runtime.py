@@ -2,7 +2,7 @@
 System config runtime helpers for System.
 """
 
-#  [ANDES] (C)2015-2024 Hantao Cui
+#  [ANDES] (C)2015-2026 Hantao Cui
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -24,18 +24,31 @@ logger = logging.getLogger(__name__)
 class SystemConfigRuntime:
     """
     Manage system-level configuration bootstrapping and persistence.
+
+    Configuration is resolved in four phases, each with higher priority:
+
+    1. ``load_rc()`` — load from ``~/.andes/andes.rc``
+    2. ``merge_file_config()`` — merge ``_config`` section from the case file
+    3. ``apply_cli_overrides()`` — apply ``config_option`` from the CLI
+    4. ``finalize()`` — create ``system.config``, add defaults, validate
+
+    Phases are called in order from :meth:`andes.system.facade.System.__init__`.
     """
 
     def __init__(self, system):
         self.system = system
 
-    def initialize(self, config=None, config_path=None, default_config=False):
+    # ------------------------------------------------------------------
+    #  Phased config resolution
+    # ------------------------------------------------------------------
+
+    def load_rc(self, config_path=None, default_config=False):
         """
-        Initialize and validate ``system.config`` and runtime NumPy options.
+        Phase 1: Resolve the rc file path and load it into
+        ``system._config_object``.
         """
         system = self.system
 
-        # get and load default config file
         system._config_path = get_config_path()
         if config_path is not None:
             system._config_path = config_path
@@ -43,7 +56,99 @@ class SystemConfigRuntime:
             system._config_path = None
 
         system._config_object = self.load_config_rc(system._config_path)
-        self.update_config_object()
+
+    def merge_file_config(self, files):
+        """
+        Phase 2: Extract ``_config`` rows from the case file and merge
+        them into ``system._config_object``.
+
+        This runs after ``load_rc()`` and before ``apply_cli_overrides()``
+        so that file-embedded config overrides andes.rc defaults but is
+        itself overridden by CLI ``config_option``.
+
+        Parameters
+        ----------
+        files : FileMan
+            File manager with ``case`` path and ``input_format`` resolved.
+        """
+        system = self.system
+
+        if files.case is None:
+            return
+
+        rows = self._extract_config(files)
+        if not rows:
+            return
+
+        if system._config_object is None:
+            system._config_object = configparser.ConfigParser()
+
+        for row in rows:
+            section = str(row.get('section', '')).strip()
+            key = str(row.get('key', '')).strip()
+            value = str(row.get('value', '')).strip()
+
+            if not section or not key:
+                logger.warning("Skipping malformed _config row: %s", row)
+                continue
+
+            if not system._config_object.has_section(section):
+                system._config_object.add_section(section)
+
+            system._config_object.set(section, key, value)
+            logger.debug("File config set: %s.%s=%s", section, key, value)
+
+    def apply_cli_overrides(self):
+        """
+        Phase 3: Apply ``config_option`` from the command line into
+        ``system._config_object``.
+
+        CLI overrides have the highest priority and win over both
+        andes.rc and file-embedded config.
+        """
+        system = self.system
+        config_option = system.options.get('config_option', None)
+        if config_option is None:
+            return
+
+        if len(config_option) == 0:
+            return
+
+        if system._config_object is None:
+            system._config_object = configparser.ConfigParser()
+
+        for item in config_option:
+
+            # check the validity of the config field
+            # each field follows the format `SECTION.FIELD = VALUE`
+
+            if item.count('=') != 1:
+                raise ValueError('config_option "{}" must be an assignment expression'.format(item))
+
+            field, value = item.split("=")
+
+            if field.count('.') != 1:
+                raise ValueError('config_option left-hand side "{}" must use format SECTION.FIELD'.format(field))
+
+            section, key = field.split(".")
+
+            section = section.strip()
+            key = key.strip()
+            value = value.strip()
+
+            if not system._config_object.has_section(section):
+                system._config_object.add_section(section)
+
+            system._config_object.set(section, key, value)
+            logger.debug("CLI config option set: %s.%s=%s", section, key, value)
+
+    def finalize(self, config=None):
+        """
+        Phase 4: Create ``system.config`` from the resolved
+        ``_config_object``, add system defaults, and validate.
+        """
+        system = self.system
+
         system.config = Config(system.__class__.__name__, dct=config)
         system.config.load(system._config_object)
 
@@ -53,10 +158,62 @@ class SystemConfigRuntime:
         system.config._deprecated.update({'warn_limits'})
 
         system.config.check()
-        self.configure_numpy(seed=system.config.seed,
-                             divide=system.config.np_divide,
-                             invalid=system.config.np_invalid,
-                             )
+        self.configure_numpy(
+            seed=system.config.seed,
+            divide=system.config.np_divide,
+            invalid=system.config.np_invalid,
+        )
+
+    # ------------------------------------------------------------------
+    #  Deprecated alias
+    # ------------------------------------------------------------------
+
+    def update_config_object(self):
+        """
+        .. deprecated:: 2.0
+            Use ``apply_cli_overrides()`` instead.
+        """
+        return self.apply_cli_overrides()
+
+    # ------------------------------------------------------------------
+    #  Config extraction from case files
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_config(files):
+        """
+        Extract ``_config`` rows from the case file.
+
+        Returns a list of dicts with keys ``section``, ``key``, ``value``.
+        Returns an empty list for formats that do not support embedded
+        config (e.g. PSS/E, MATPOWER) or when no ``_config`` is present.
+        """
+        from andes.io import input_formats
+
+        case = files.case
+        if case is None:
+            return []
+
+        # Determine format from extension if not already set
+        fmt = files.input_format
+        if not fmt:
+            ext = os.path.splitext(case)[1].strip('.').lower()
+            for key, exts in input_formats.items():
+                if ext in exts:
+                    fmt = key
+                    break
+
+        if fmt == 'xlsx':
+            return _extract_config_xlsx(case)
+        elif fmt == 'json':
+            return _extract_config_json(case)
+        else:
+            # PSS/E, MATPOWER, etc. — no _config support
+            return []
+
+    # ------------------------------------------------------------------
+    #  Internal helpers
+    # ------------------------------------------------------------------
 
     def _add_system_defaults(self):
         """
@@ -110,50 +267,6 @@ class SystemConfigRuntime:
                                 np_invalid={'ignore', 'warn', 'raise', 'call', 'print', 'log'},
                                 )
 
-    def update_config_object(self):
-        """
-        Change config on the fly based on command-line options.
-        """
-        system = self.system
-        config_option = system.options.get('config_option', None)
-        if config_option is None:
-            return
-
-        if len(config_option) == 0:
-            return
-
-        newobj = False
-        if system._config_object is None:
-            system._config_object = configparser.ConfigParser()
-            newobj = True
-
-        for item in config_option:
-
-            # check the validity of the config field
-            # each field follows the format `SECTION.FIELD = VALUE`
-
-            if item.count('=') != 1:
-                raise ValueError('config_option "{}" must be an assignment expression'.format(item))
-
-            field, value = item.split("=")
-
-            if field.count('.') != 1:
-                raise ValueError('config_option left-hand side "{}" must use format SECTION.FIELD'.format(field))
-
-            section, key = field.split(".")
-
-            section = section.strip()
-            key = key.strip()
-            value = value.strip()
-
-            if not newobj:
-                system._config_object.set(section, key, value)
-                logger.debug("Existing config option set: %s.%s=%s", section, key, value)
-            else:
-                system._config_object.add_section(section)
-                system._config_object.set(section, key, value)
-                logger.debug("New config option added: %s.%s=%s", section, key, value)
-
     def set_config(self, config=None):
         """
         Set configuration for the System object.
@@ -170,26 +283,56 @@ class SystemConfigRuntime:
 
     def collect_config(self):
         """
-        Collect config data from models.
+        Collect config data from models into a ``ConfigParser``.
 
         Returns
         -------
-        dict
-            a dict containing the config from devices; class names are keys and
-            configs in a dict are values.
+        configparser.ConfigParser
+            Sections are class names, values are config dicts.
         """
         system = self.system
         config_dict = configparser.ConfigParser()
-        config_dict[system.__class__.__name__] = system.config.as_dict()
+        config_dict[system.__class__.__name__] = system.config.as_dict(refresh=True)
 
         all_with_config = OrderedDict(list(system.routines.items()) +
                                       list(system.models.items()))
 
         for name, instance in all_with_config.items():
-            cfg = instance.config.as_dict()
+            cfg = instance.config.as_dict(refresh=True)
             if len(cfg) > 0:
                 config_dict[name] = cfg
         return config_dict
+
+    def collect_config_rows(self):
+        """
+        Collect all config values as a flat list of row dicts for
+        serialization to ``_config`` sheets/keys.
+
+        Returns
+        -------
+        list of dict
+            Each dict has keys ``section``, ``key``, ``value``.
+        """
+        system = self.system
+        rows = []
+
+        for key, val in system.config.as_dict(refresh=True).items():
+            rows.append({'section': system.__class__.__name__,
+                         'key': key, 'value': val})
+
+        for name, routine in system.routines.items():
+            cfg = routine.config.as_dict(refresh=True)
+            if cfg:
+                for key, val in cfg.items():
+                    rows.append({'section': name, 'key': key, 'value': val})
+
+        for name, model in system.models.items():
+            cfg = model.config.as_dict(refresh=True)
+            if cfg:
+                for key, val in cfg.items():
+                    rows.append({'section': name, 'key': key, 'value': val})
+
+        return rows
 
     def save_config(self, file_path=None, overwrite=False):
         """
@@ -264,3 +407,48 @@ class SystemConfigRuntime:
         conf.read(conf_path)
         logger.info('> Loaded config from file "%s"', conf_path)
         return conf
+
+
+# ------------------------------------------------------------------
+#  Format-specific config extraction (module-level helpers)
+# ------------------------------------------------------------------
+
+def _extract_config_xlsx(case):
+    """
+    Read the ``_config`` sheet from an xlsx file.
+
+    Returns a list of dicts with keys ``section``, ``key``, ``value``.
+    """
+    try:
+        from andes.shared import pd
+        df = pd.read_excel(case, sheet_name='_config',
+                           index_col=None, engine='openpyxl')
+        df.dropna(axis=0, how='all', inplace=True)
+        df.dropna(subset=['section', 'key'], inplace=True)
+        return df.to_dict(orient='records')
+    except (ValueError, KeyError):
+        # No _config sheet — expected for older files
+        return []
+    except Exception as e:
+        logger.warning("Could not read _config from xlsx: %s", e)
+        return []
+
+
+def _extract_config_json(case):
+    """
+    Read the ``_config`` key from a JSON file.
+
+    Returns a list of dicts with keys ``section``, ``key``, ``value``.
+    """
+    import json as json_mod
+
+    if not isinstance(case, str):
+        return []
+
+    try:
+        with open(case, 'r') as f:
+            data = json_mod.load(f)
+        return data.get('_config', [])
+    except Exception as e:
+        logger.warning("Could not read _config from json: %s", e)
+        return []

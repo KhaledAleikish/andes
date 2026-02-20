@@ -58,6 +58,12 @@ def _dump_system(system, skip_empty, orient='records'):
     """
 
     out = OrderedDict()
+
+    # Write _config as list-of-records (same schema as xlsx _config sheet)
+    config_rows = system.config_runtime.collect_config_rows()
+    if config_rows:
+        out['_config'] = config_rows
+
     for name, instance in system.models.items():
         if skip_empty and instance.n == 0:
             continue
@@ -94,6 +100,9 @@ def read(system, infile: Union[str, io.IOBase]):
         f.close()
 
     for name, dct in json_in.items():
+        if name == '_config':
+            continue
+
         for row in dct:
             system.add(name, row)
 
