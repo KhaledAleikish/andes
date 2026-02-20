@@ -5,6 +5,7 @@ Integration methods for DAE.
 import logging
 import numpy as np
 
+from andes.routines.adaptive import accept_reject, check_adaptive_bust, weighted_rms_error
 from andes.shared import sparse, matrix, tqdm
 from andes.routines.qndf import QNDF
 
@@ -16,6 +17,56 @@ class ImplicitIter:
     """
     Base class for implicit iterative methods.
     """
+    nolte_event_steps = 0
+    nolte_event_window = 0.0
+    requires_variable_step = False
+
+    @staticmethod
+    def niter_next_h(niter, h, h_min, h_max):
+        """
+        Niter-based step-size heuristic shared by all methods.
+
+        Returns a clamped next step size based on how many Newton iterations
+        were needed for convergence.
+        """
+        if niter >= 15:
+            h_new = h * 0.5
+        elif niter <= 6:
+            h_new = h * 1.1
+        else:
+            h_new = h * 0.95
+        return min(max(h_new, h_min), h_max)
+
+    @staticmethod
+    def calc_h(tds):
+        """
+        Default step-size control: niter heuristic with fixt/shrinkt handling.
+        """
+        config = tds.config
+
+        if tds.converged:
+            tds.deltat = ImplicitIter.niter_next_h(
+                tds.niter, tds.deltat, tds.deltatmin, tds.deltatmax)
+
+            if config.fixt:
+                tds.deltat = min(config.tstep, tds.deltat)
+
+            if tds.chatter is True:
+                tds.chatter = False
+        else:
+            if config.fixt and not config.shrinkt:
+                tds.deltat = 0
+                tds.busted = True
+                tds.err_msg = (
+                    f"Simulation did not converge with step size h={config.tstep:.4f}.\n"
+                    "Reduce the step size `tstep`, or set `shrinkt = 1` to let it shrink."
+                )
+            else:
+                tds.deltat *= 0.9
+                if tds.deltat < tds.deltatmin:
+                    tds.deltat = 0
+                    tds.err_msg = "Time step reduced to zero. Convergence not likely."
+                    tds.busted = True
 
     @staticmethod
     def calc_jac(tds, gxs, gys):
@@ -24,6 +75,41 @@ class ImplicitIter:
     @staticmethod
     def calc_q(x, f, Tf, h, x0, f0):
         pass
+
+    @staticmethod
+    def checkpoint_state(tds):
+        """
+        Snapshot DAE state for rollback.
+        """
+        dae = tds.system.dae
+        return dae.x.copy(), dae.y.copy(), dae.f.copy()
+
+    @staticmethod
+    def restore_state(tds, state):
+        """
+        Restore DAE state from a checkpoint.
+        """
+        dae = tds.system.dae
+        x_state, y_state, f_state = state
+        dae.x[:] = x_state
+        dae.y[:] = y_state
+        dae.f[:] = f_state
+        tds.system.vars_to_models()
+
+    @staticmethod
+    def solve_once(tds, h, method):
+        """
+        Run one implicit step with the given method and step size.
+        """
+        original_method = tds.method
+        original_h = tds.h
+        tds.method = method
+        tds.h = h
+        try:
+            return ImplicitIter.step(tds)
+        finally:
+            tds.method = original_method
+            tds.h = original_h
 
     @staticmethod
     def step(tds):
@@ -316,10 +402,160 @@ class Trapezoid(ImplicitIter):
         return Tf * (x - x0) - h * 0.5 * (f + f0)
 
 
+class TrapezoidAdaptive(Trapezoid):
+    """
+    Adaptive trapezoid with step-doubling LTE estimation.
+
+    The LTE estimate is based on the difference between one full step of size
+    ``h`` and two half-steps of size ``h/2``.
+    """
+    nolte_event_steps = 4
+    nolte_event_window = 0.1
+    requires_variable_step = True
+    _trap_solver = Trapezoid()
+
+    @staticmethod
+    def calc_h(tds):
+        """
+        Step size is set by ``step()``. Only check bust on failure.
+        """
+        check_adaptive_bust(tds)
+
+    @staticmethod
+    def _reject(tds, h_next, state=None):
+        """
+        Reject current candidate, optionally restoring the previous state.
+        """
+        if state is not None:
+            ImplicitIter.restore_state(tds, state)
+        # Keep predictor snapshots consistent with restored DAE state.
+        dae = tds.system.dae
+        if tds.x0 is not None:
+            tds.x0[:] = dae.x
+        if tds.y0 is not None:
+            tds.y0[:] = dae.y
+        if tds.f0 is not None:
+            tds.f0[:] = dae.f
+        tds.deltat = min(h_next, tds.deltatmax)
+        tds.converged = False
+        tds.last_converged = False
+        return False
+
+    @staticmethod
+    def _nolte_next_h(tds, h):
+        """
+        Heuristic next step size when LTE control is disabled.
+        """
+        return ImplicitIter.niter_next_h(tds.niter, h, tds.deltatmin_adapt, tds.deltatmax)
+
+    @staticmethod
+    def step(tds):
+        """
+        One adaptive trapezoid step.
+
+        Reads ``tds.h`` and writes ``tds.deltat``.
+        Returns True when accepted, False when rejected.
+        """
+        dae = tds.system.dae
+        h = tds.h
+
+        if h == 0:
+            logger.error("Current step size is zero. Integration is not permitted.")
+            return False
+
+        n = dae.n
+        trap = TrapezoidAdaptive._trap_solver
+
+        # Restart mode near events: use converged trapezoid steps without LTE
+        # for a few steps and/or for a short event-time window.
+        use_nolte = tds._adaptive_nolte_steps > 0
+        if (not use_nolte) and (tds.method.nolte_event_window > 0.0):
+            use_nolte = (dae.t - tds._last_switch_t) < tds.method.nolte_event_window
+
+        if use_nolte:
+            accepted = ImplicitIter.solve_once(tds, h, trap)
+            if accepted:
+                if tds._adaptive_nolte_steps > 0:
+                    tds._adaptive_nolte_steps -= 1
+                tds.deltat = TrapezoidAdaptive._nolte_next_h(tds, h)
+                tds.converged = True
+                tds.last_converged = True
+                return True
+
+            tds.deltat = min(max(h * 0.5, tds.deltatmin_adapt), tds.deltatmax)
+            tds.converged = False
+            tds.last_converged = False
+            return False
+
+        # algebraic-only systems: fallback to a single trapezoid solve
+        if n == 0:
+            accepted = ImplicitIter.solve_once(tds, h, trap)
+            if accepted:
+                tds.deltat = min(h, tds.deltatmax)
+            else:
+                tds.deltat = min(h * 0.5, tds.deltatmax)
+            tds.converged = accepted
+            tds.last_converged = accepted
+            return accepted
+
+        state0 = ImplicitIter.checkpoint_state(tds)
+        x_prev = dae.x[:n].copy()
+
+        # one full step with h
+        ok_full = ImplicitIter.solve_once(tds, h, trap)
+        if not ok_full:
+            # Base Newton path already rolled state back.
+            return TrapezoidAdaptive._reject(tds, h * 0.5)
+        x_full = dae.x[:n].copy()
+
+        # restore and run two half-steps
+        ImplicitIter.restore_state(tds, state0)
+
+        if not ImplicitIter.solve_once(tds, 0.5 * h, trap):
+            return TrapezoidAdaptive._reject(tds, h * 0.5, state0)
+
+        if not ImplicitIter.solve_once(tds, 0.5 * h, trap):
+            return TrapezoidAdaptive._reject(tds, h * 0.5, state0)
+
+        # second half-step result is already in dae.x / dae.y
+        x_half = dae.x[:n]
+        err_wt = np.empty_like(x_half)
+        err_vec = (x_half - x_full) / 3.0
+        err_est = weighted_rms_error(err_vec, x_prev, x_half,
+                                     tds.config.abstol, tds.config.reltol, err_wt)
+
+        accepted, h_next, _ = accept_reject(
+            err_est=err_est,
+            h=h,
+            deltatmax=tds.deltatmax,
+            order=2,
+            accept_safety=0.9,
+            accept_min_factor=0.2,
+            accept_max_factor=2.0,
+            reject_safety=0.9,
+            reject_min_factor=0.2,
+            reject_max_factor=0.9,
+            repeat_reject_after=999,   # no failure counter for trapezoid-adaptive
+            repeat_reject_factor=1.0,
+        )
+
+        if accepted:
+            tds.deltat = h_next
+            tds.converged = True
+            tds.last_converged = True
+            return True
+
+        # Reject — skip LTE for enough steps that the 1.1x/step growth
+        # can recover from the worst-case 0.2x shrink (1.1^20 ≈ 6.7 > 5).
+        tds._adaptive_nolte_steps = max(tds._adaptive_nolte_steps, 20)
+        return TrapezoidAdaptive._reject(tds, h_next, state0)
+
+
 # --- solution method name-to-class mapping ---
 # !!! add new solvers to below
 
 method_map = {"trapezoid": Trapezoid,
+              "trap_adapt": TrapezoidAdaptive,
               "backeuler": BackEuler,
               'qndf': QNDF,
               }

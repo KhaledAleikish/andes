@@ -4,6 +4,7 @@ import logging
 
 import numpy as np
 
+from andes.routines.adaptive import accept_reject, candidate_h, check_adaptive_bust, weighted_rms_error
 from andes.shared import sparse, matrix, tqdm
 
 logger = logging.getLogger(__name__)
@@ -117,40 +118,29 @@ def update_D(D, dx_corr, k):
         D[:, j] += D[:, j + 1]
 
 
-def compute_err_est(err_vec, x_prev, x_new, abstol, reltol, err_wt):
-    np.maximum(np.abs(x_prev), np.abs(x_new), out=err_wt)
-    err_wt *= reltol
-    err_wt += abstol
-    np.divide(err_vec, err_wt, out=err_wt)
-    return np.sqrt(np.dot(err_wt, err_wt) / len(err_wt))
-
-
 def select_order_and_step(cache, h, order, err_est):
     """Pick optimal (order, step_size) from order-1, order, order+1."""
-    if err_est > 0:
-        factor_cur = 1.2 * err_est ** (1.0 / (order + 1))
-        h_cur_order = h / factor_cur if factor_cur > 0.1 else 10.0 * h
-    else:
-        h_cur_order = 10.0 * h
+    h_cur_order = candidate_h(err_est, h, order,
+                              safety=(1.0 / 1.2),
+                              min_factor=0.0,
+                              max_factor=10.0)
     order_new, h_new = order, h_cur_order
 
     if order > 1 and cache.consec_steps >= order:
         err_est_km1 = cache.err_est_km1
-        if err_est_km1 > 0:
-            factor = 1.3 * err_est_km1 ** (1.0 / order)
-            h_lower = h / factor if factor <= 1.3 else 0.0
-        else:
-            h_lower = 10.0 * h
+        h_lower = candidate_h(err_est_km1, h, order - 1,
+                              safety=(1.0 / 1.3),
+                              min_factor=0.0,
+                              max_factor=10.0)
         if h_lower > h_new:
             order_new, h_new = order - 1, h_lower
 
     if order < cache.max_order and cache.consec_steps >= order + 2:
         err_est_kp1 = cache.err_est_kp1
-        if err_est_kp1 > 0:
-            factor = 1.4 * err_est_kp1 ** (1.0 / (order + 2))
-            h_higher = h / factor if factor <= 1.4 else 0.0
-        else:
-            h_higher = 10.0 * h
+        h_higher = candidate_h(err_est_kp1, h, order + 1,
+                               safety=(1.0 / 1.4),
+                               min_factor=0.0,
+                               max_factor=10.0)
         if h_higher > h_new:
             order_new, h_new = order + 1, h_higher
 
@@ -167,6 +157,16 @@ def select_order_and_step(cache, h, order, err_est):
 
 class QNDF:
     """Variable-order (1-5) quasi-constant-step NDF method."""
+    nolte_event_steps = 0
+    nolte_event_window = 0.0
+    requires_variable_step = True
+
+    @staticmethod
+    def calc_h(tds):
+        """
+        Step size is set by ``step()``. Only check bust on failure.
+        """
+        check_adaptive_bust(tds)
 
     @staticmethod
     def step(tds):
@@ -405,23 +405,23 @@ class QNDF:
 
         # err_est at current order k
         err_k = error_constant(k) * cache.D[:, k + 1]
-        err_est = compute_err_est(err_k, cache.x_prev, x_new,
-                                  cache.abstol, cache.reltol, cache.err_wt)
+        err_est = weighted_rms_error(err_k, cache.x_prev, x_new,
+                                     cache.abstol, cache.reltol, cache.err_wt)
         cache.err_est = err_est
 
         # err_est at order k-1
         if k > 1 and cache.consec_steps >= k:
             err_km1 = error_constant(k - 1) * cache.D[:, k]
-            cache.err_est_km1 = compute_err_est(err_km1, cache.x_prev, x_new,
-                                                cache.abstol, cache.reltol, cache.err_wt)
+            cache.err_est_km1 = weighted_rms_error(err_km1, cache.x_prev, x_new,
+                                                   cache.abstol, cache.reltol, cache.err_wt)
         else:
             cache.err_est_km1 = float('inf')
 
         # err_est at order k+1
         if k < cache.max_order and cache.consec_steps >= k + 2:
             err_kp1 = error_constant(k + 1) * cache.D[:, k + 2]
-            cache.err_est_kp1 = compute_err_est(err_kp1, cache.x_prev, x_new,
-                                                cache.abstol, cache.reltol, cache.err_wt)
+            cache.err_est_kp1 = weighted_rms_error(err_kp1, cache.x_prev, x_new,
+                                                   cache.abstol, cache.reltol, cache.err_wt)
         else:
             cache.err_est_kp1 = float('inf')
 
@@ -449,14 +449,26 @@ class QNDF:
             dae.f[:] = tds.f0
             system.vars_to_models()
 
-            z = 1.2 * err_est ** (1.0 / (k + 1))
-            factor = 1.0 / z if z > 0.1 else 10.0
-            factor = max(factor, 0.2)
-            tds.deltat = min(h * factor, tds.deltatmax)
+            _, h_next, fail_count_next = accept_reject(
+                err_est=err_est,
+                h=h,
+                deltatmax=tds.deltatmax,
+                order=k,
+                fail_count=cache.consec_fail_count,
+                accept_threshold=1.0,
+                # acceptance not used in this branch, keep same policy shape.
+                accept_safety=(1.0 / 1.2),
+                accept_min_factor=0.0,
+                accept_max_factor=10.0,
+                reject_safety=(1.0 / 1.2),
+                reject_min_factor=0.2,
+                reject_max_factor=1.0,
+                repeat_reject_after=1,
+                repeat_reject_factor=0.5,
+            )
+            tds.deltat = h_next
+            cache.consec_fail_count = fail_count_next
 
-            cache.consec_fail_count += 1
-            if cache.consec_fail_count > 1:
-                tds.deltat = min(tds.deltat, h * 0.5)
             if cache.consec_fail_count > 2 and k > 1:
                 cache.order = k - 1
 

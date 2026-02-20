@@ -61,16 +61,20 @@ class TDS(BaseRoutine):
                                      ('chatter_iter', 4),
                                      ('linesearch', 1),
                                      ('dtmax', 0),
+                                     ('dtmin_adapt', 0),
                                      ('abstol', 1e-6),
                                      ('reltol', 1e-3),
                                      )))
         self.config.add_extra("_help",
-                              method='DAE solution method',
+                              method='DAE solution method: "trapezoid" and "backeuler" use '
+                                     'niter-based step heuristic; "trap_adapt" and "qndf" use '
+                                     'internal LTE error control (requires fixt=0)',
                               tol="convergence tolerance",
                               t0="simulation starting time",
                               tf="simulation ending time",
-                              fixt="use fixed step size (1) or variable (0)",
-                              shrinkt='shrink step size for fixed method if not converged',
+                              fixt='use fixed step size (1) or variable (0); '
+                                   'adaptive methods (trap_adapt, qndf) override to 0',
+                              shrinkt='allow step shrinking on non-convergence when fixt=1',
                               honest='honest Newton method that updates Jac at each step',
                               tstep='integration step size',
                               max_iter='maximum number of iterations',
@@ -95,8 +99,9 @@ class TDS(BaseRoutine):
                               chatter_iter='minimum iterations to detect chattering',
                               linesearch='nonmonotone backtracking line search',
                               dtmax='maximum step size (0 = auto from freq and tspan)',
-                              abstol='absolute tolerance for QNDF LTE estimation (ignored by trapezoid/backeuler)',
-                              reltol='relative tolerance for QNDF LTE estimation (ignored by trapezoid/backeuler)',
+                              dtmin_adapt='minimum step size for adaptive methods (0 = auto)',
+                              abstol='absolute tolerance for adaptive LTE estimation',
+                              reltol='relative tolerance for adaptive LTE estimation',
                               )
         self.config.add_extra("_alt",
                               method=tuple(method_map.keys()),
@@ -128,6 +133,7 @@ class TDS(BaseRoutine):
                               chatter_iter='int>=4',
                               linesearch=(0, 1),
                               dtmax='>=0',
+                              dtmin_adapt='>=0',
                               abstol='float',
                               reltol='float',
                               )
@@ -148,6 +154,7 @@ class TDS(BaseRoutine):
         # to be computed
         self.deltat = 0
         self.deltatmin = 0
+        self.deltatmin_adapt = 0
         self.deltatmax = 0
         self.h = 0
         self.last_pc = 0.0
@@ -165,6 +172,7 @@ class TDS(BaseRoutine):
         self._switch_idx = 0          # index into `System.switch_times`
         self._last_switch_t = -999    # the last critical time
         self.custom_event = False
+        self._adaptive_nolte_steps = 0
         self.mis = [1, 1]
         self.pbar = None
         self.callpert = None
@@ -602,11 +610,11 @@ class TDS(BaseRoutine):
 
         Notes
         -----
-        A heuristic function is used for variable time step size ::
+        Step-size control is delegated to ``self.method.calc_h()``.
 
-                 min(0.50 * h, hmin), if niter >= 15
-            h =  max(1.10 * h, hmax), if niter <= 6
-                 min(0.95 * h, hmin), otherwise
+        The default (``ImplicitIter.calc_h``) applies a niter-based heuristic.
+        Adaptive methods (``TrapezoidAdaptive``, ``QNDF``) set ``deltat``
+        inside their ``step()`` and only check the bust condition here.
 
         Returns
         -------
@@ -620,47 +628,8 @@ class TDS(BaseRoutine):
         # t=0, first iteration (not previously failed), or resumed simulation
         if (system.dae.t == 0 and self.niter == 0) or resume:
             self.deltat = self._calc_h_first()
-
-        elif self.qndf_cache is not None:
-            # QNDF's step() already set self.deltat via error controller.
-            # Only need to validate minimum bound on failure.
-            if not self.converged:
-                if self.deltat < self.deltatmin:
-                    self.deltat = 0
-                    self.busted = True
-                    self.err_msg = "Step size below minimum after QNDF rejection."
-
-        elif config.fixt and not config.shrinkt and (not self.converged):
-            self.deltat = 0
-            self.busted = True
-            self.err_msg = f"Simulation did not converge with step size h={self.config.tstep:.4f}.\n"
-            self.err_msg += "Reduce the step size `tstep`, or set `shrinkt = 1` to let it shrink."
         else:
-            if self.converged:
-                if self.niter >= 15:
-                    self.deltat = max(self.deltat * 0.5, self.deltatmin)
-                elif self.niter <= 6:
-                    self.deltat = min(self.deltat * 1.1, self.deltatmax)
-                else:
-                    self.deltat = max(self.deltat * 0.95, self.deltatmin)
-
-                # for converged cases, set step size back to the initial `config.tstep`
-                if config.fixt:
-                    self.deltat = min(config.tstep, self.deltat)
-
-                if self.chatter is True:
-                    # one can do something such as increasing the step size, but
-                    # stopping chattering is not guaranteed
-
-                    # remember of unset the `chatter` flag
-                    self.chatter = False
-
-            else:
-                self.deltat *= 0.9
-                if self.deltat < self.deltatmin:
-                    self.deltat = 0
-                    self.err_msg = "Time step reduced to zero. Convergence not likely."
-                    self.busted = True
+            self.method.calc_h(self)
 
         self.h = self.deltat
 
@@ -735,6 +704,14 @@ class TDS(BaseRoutine):
             self.deltatmax = config.dtmax
             self.deltat = min(self.deltat, self.deltatmax)
             self.deltatmin = min(self.deltatmin, self.deltatmax / 20)
+
+        # Adaptive-only minimum floor. Default is looser than `deltatmin`
+        # so adaptive controllers can survive sharp event transients.
+        if config.dtmin_adapt > 0:
+            self.deltatmin_adapt = min(config.dtmin_adapt, self.deltatmax)
+        else:
+            self.deltatmin_adapt = min(max(self.deltatmin * 1e-6, 1e-12),
+                                       self.deltatmax)
 
         # if from CSV, determine `deltat` from data
         if self.data_csv is not None:
@@ -910,6 +887,11 @@ class TDS(BaseRoutine):
 
         if ret and self.qndf_cache is not None:
             self.qndf_cache.reset_for_event(system.dae.x[:system.dae.n])
+
+        # Method-specific no-LTE restart window after discontinuities.
+        if ret and self.method.nolte_event_steps > 0:
+            self._adaptive_nolte_steps = max(self._adaptive_nolte_steps,
+                                             self.method.nolte_event_steps)
 
         return ret
 
@@ -1104,6 +1086,7 @@ class TDS(BaseRoutine):
         """
         self.deltat = 0
         self.deltatmin = 0
+        self.deltatmin_adapt = 0
         self.deltatmax = 0
         self.h = 0
         self.last_pc = 0.0
@@ -1117,6 +1100,7 @@ class TDS(BaseRoutine):
         self._switch_idx = 0        # index into `System.switch_times`
         self._last_switch_t = -999  # the last event time
         self.custom_event = False
+        self._adaptive_nolte_steps = 0
         self.mis = [1, 1]
         self.system.dae.t = np.array(0.0)
         self.pbar = None
@@ -1179,8 +1163,8 @@ class TDS(BaseRoutine):
         self.method = method_map[name]()
         self.config.method = name
 
-        if name == 'qndf' and self.config.fixt:
-            logger.info("QNDF method requires variable step size; setting fixt=0.")
+        if self.method.requires_variable_step and self.config.fixt:
+            logger.info('"%s" requires variable step size; setting fixt=0.', name)
             self.config.fixt = 0
 
         if name != 'qndf':
