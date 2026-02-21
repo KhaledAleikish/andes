@@ -101,7 +101,7 @@ target/
 # cursor
 .cursor/
 
-./trellis/
+.trellis/
 
 # Ipython Notebook
 .ipynb_checkpoints
