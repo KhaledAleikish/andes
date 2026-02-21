@@ -95,6 +95,14 @@ target/
 # vscode
 .vscode/*
 
+# claude code
+.claude/
+
+# cursor
+.cursor/
+
+./trellis/
+
 # Ipython Notebook
 .ipynb_checkpoints
 
