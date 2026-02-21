@@ -1703,6 +1703,8 @@ class System:
 
         if mdl.flags.topo and ue_val != old_ue:
             self.conn.invalidate()
+        elif mdl.flags.ybus and ue_val != old_ue:
+            self.conn.invalidate_ybus()
 
         # Propagate to children
         self._propagate_status(mdl, idx, uid, ue_val)

@@ -30,6 +30,8 @@ class ConnMan:
     def __init__(self, system=None):
         self.system = system
         self._dirty = True  # True so first check in setup() always runs
+        self._topo_version = 0  # monotonic counter, incremented on topology changes
+        self._ybus_version = 0  # monotonic counter, incremented on any Ybus change
 
     # ------------------------------------------------------------------
     #  Topology analysis
@@ -76,8 +78,22 @@ class ConnMan:
             logger.debug('Connectivity check completed in %s.', s)
 
     def invalidate(self):
-        """Mark topology as dirty so the next check will run."""
+        """Mark topology as dirty so the next check will run.
+
+        Increments both ``_topo_version`` and ``_ybus_version`` because
+        topology changes (Line, Jumper, Fortescue) always affect Ybus.
+        """
         self._dirty = True
+        self._topo_version += 1
+        self._ybus_version += 1
+
+    def invalidate_ybus(self):
+        """Signal that the bus admittance matrix changed.
+
+        Called when a non-topological but Ybus-contributing model (e.g.,
+        Shunt) changes status.  Does NOT trigger connectivity recheck.
+        """
+        self._ybus_version += 1
 
     def _collect_edges(self):
         """
