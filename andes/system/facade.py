@@ -961,7 +961,7 @@ class System:
             for mdl in models.values():
                 for rows, cols, vals in mdl.triplets.zip_ijv(j_name):
                     try:
-                        if self.config.ipadd:
+                        if self.runtime.ipadd:
                             self.dae.__dict__[j_name].ipadd(vals, rows, cols)
                         else:
                             self.dae.__dict__[j_name] += spmatrix(vals, rows, cols, j_size, 'd')
@@ -988,7 +988,7 @@ class System:
         aidx = self.Bus.islanded_a
         vidx = self.Bus.islanded_v
 
-        if self.config.ipadd:
+        if self.runtime.ipadd:
             self.dae.gy.ipset(self.config.diag_eps, aidx, aidx)
             self.dae.gy.ipset(0.0, aidx, vidx)
 
@@ -1335,7 +1335,7 @@ class System:
         for name, mdl in models.items():
             ret[name] = getattr(mdl, method)(*args, **kwargs)
 
-            if self.config.save_stats:
+            if self.runtime.save_stats:
                 if method not in self.call_stats[name]:
                     self.call_stats[name][method] = 1
                 else:

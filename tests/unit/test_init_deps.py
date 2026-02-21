@@ -266,7 +266,7 @@ class TestDeprecatedConfig(unittest.TestCase):
         """Setting a deprecated field should be silently ignored."""
         from andes.core.common import Config
         c = Config('test')
-        c._deprecated.add('old_field')
+        c._deprecated['old_field'] = ''
         c.old_field = 42
         self.assertNotIn('old_field', c.__dict__)
 
@@ -274,14 +274,14 @@ class TestDeprecatedConfig(unittest.TestCase):
         """Getting a deprecated field should return 0."""
         from andes.core.common import Config
         c = Config('test')
-        c._deprecated.add('old_field')
+        c._deprecated['old_field'] = ''
         self.assertEqual(c.old_field, 0)
 
     def test_non_deprecated_works(self):
         """Normal fields should still work."""
         from andes.core.common import Config
         c = Config('test')
-        c._deprecated.add('old_field')
+        c._deprecated['old_field'] = ''
         c.new_field = 99
         self.assertEqual(c.new_field, 99)
 

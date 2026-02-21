@@ -157,7 +157,7 @@ class CodegenManager:
                 the_class = getattr(the_module, model_name)
                 model_list.append(the_class(system=None, config=system._config_object))
 
-        yapf_pycode = system.config.yapf_pycode
+        yapf_pycode = system.runtime.yapf_pycode
 
         def _prep_model(model: Model):
             """
@@ -208,7 +208,7 @@ class CodegenManager:
         Helper function to compile all functions with Numba before init.
         """
         system = self.system
-        if not system.config.numba:
+        if not system.runtime.numba:
             return
 
         try:
@@ -216,11 +216,11 @@ class CodegenManager:
         except ImportError:
             # numba not installed
             logger.warning("numba is enabled but not installed. Please install numba manually.")
-            system.config.numba = 0
+            system.runtime.numba = 0
             return False
 
-        use_parallel = bool(system.config.numba_parallel)
-        nopython = bool(system.config.numba_nopython)
+        use_parallel = bool(system.runtime.numba_parallel)
+        nopython = bool(system.runtime.numba_nopython)
 
         logger.info("Numba compilation initiated with caching.")
 
@@ -249,7 +249,7 @@ class CodegenManager:
             models = system._get_models(models)
 
         # turn on numba for precompilation
-        system.config.numba = 1
+        system.runtime.numba = 1
 
         system.setup()
         numba_ok = self._init_numba(models)

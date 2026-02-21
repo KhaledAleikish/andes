@@ -92,7 +92,7 @@ class PFlow(BaseRoutine):
         logger.info('Power flow initialized in %s.', s1)
 
         # force compile if numba is on - improves timing accuracy
-        if system.config.numba:
+        if system.runtime.numba:
             t0, _ = elapsed()
 
             system.f_update(self.models)
@@ -276,7 +276,7 @@ class PFlow(BaseRoutine):
         out = list()
         out.append('')
         out.append('-> Power flow calculation')
-        out.append(f'{"Numba":>16s}: {"On" if self.system.config.numba else "Off"}')
+        out.append(f'{"Numba":>16s}: {"On" if self.system.runtime.numba else "Off"}')
         out.append(f'{"Sparse solver":>16s}: {self.solver.sparselib.upper()}')
         out.append(f'{"Solution method":>16s}: {self.config.method} method')
 

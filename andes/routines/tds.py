@@ -287,7 +287,7 @@ class TDS(BaseRoutine):
         if system.streaming.dimec is None:
             system.streaming.connect()
 
-        if system.config.dime_enabled:
+        if system.runtime.dime_enabled:
             # send out system data using DiME
             self.streaming_init()
             self.streaming_step()
@@ -444,7 +444,7 @@ class TDS(BaseRoutine):
                 step_status = self._csv_step()
 
             # record number of iterations and success flag
-            if system.config.save_stats:
+            if system.runtime.save_stats:
                 self.call_stats.append((system.dae.t.tolist(), self.niter, step_status))
 
             if step_status:
@@ -562,7 +562,7 @@ class TDS(BaseRoutine):
             logger.info('Outputs written in %s.', s1)
 
         # end data streaming
-        if system.config.dime_enabled:
+        if system.runtime.dime_enabled:
             system.streaming.finalize()
 
         # load data into `TDS.plotter` in a notebook or in an interactive mode
@@ -1125,7 +1125,7 @@ class TDS(BaseRoutine):
         None
         """
         system = self.system
-        if system.config.dime_enabled:
+        if system.runtime.dime_enabled:
             system.streaming.send_init(recepient='all')
             logger.info('Broadcast system data. Waiting to receive modules init info...')
             time.sleep(0.5)
@@ -1140,7 +1140,7 @@ class TDS(BaseRoutine):
         None
         """
         system = self.system
-        if system.config.dime_enabled:
+        if system.runtime.dime_enabled:
             system.streaming.sync_and_handle()
             system.streaming.vars_to_modules()
             system.streaming.vars_to_pmu()

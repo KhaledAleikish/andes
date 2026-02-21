@@ -56,6 +56,9 @@ Model changes:
 - Fix EXDC2 `Se0` formula to use `ue` instead of removed `ug`.
 - Enable `AntiWindup` init limit adjustment and fix REEC models.
 - Fix `zero_out` bypass in `LeadLag` and `LeadLag2ndOrd` blocks.
+- Add `FreqDiv` frequency divider model (Milano & Ortega 2017) for algebraic
+  bus frequency estimation from generator rotor speeds and network susceptance.
+  Uses constant Jacobians via `j_setup` for zero per-iteration overhead.
 
 Eigenvalue analysis:
 
@@ -119,6 +122,13 @@ Refactoring:
 - Refactor `SystemConfigRuntime` into phased config resolution
   (`load_rc` → `merge_file_config` → `apply_cli_overrides` → `finalize`) and
   restructure `System.__init__` with `_init_managers` / `_init_models` helpers.
+- Split `System.config` into `system.config` (case-relevant: `freq`, `mva`,
+  `diag_eps`, `warn_abnormal`) and `system.runtime` (machine/environment:
+  `numba`, `sparselib`, `dime_*`, `np_*`, etc.). Only case config is written
+  to data files; runtime config persists in `andes.rc` under `[Runtime]`.
+- Move per-routine `sparselib` to system-wide `system.runtime.sparselib`.
+- Add `Config.check()` warning for unrecognized config fields (typos, misplaced
+  keys) and `Config._add()` warning for fields moved to `[Runtime]` in v2.0.
 
 I/O:
 

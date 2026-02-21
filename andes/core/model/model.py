@@ -1160,10 +1160,10 @@ class Model:
         Convert equation residual calls, Jacobian calls, and variable service
         calls into JIT compiled functions.
 
-        This function can be enabled by setting ``System.config.numba = 1``.
+        This function can be enabled by setting ``System.runtime.numba = 1``.
         """
 
-        if self.system.config.numba != 1:
+        if self.system.runtime.numba != 1:
             return
 
         if self.flags.jited is True:

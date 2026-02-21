@@ -144,24 +144,45 @@ class SystemConfigRuntime:
 
     def finalize(self, config=None):
         """
-        Phase 4: Create ``system.config`` from the resolved
-        ``_config_object``, add system defaults, and validate.
+        Phase 4: Create ``system.config`` and ``system.runtime`` from
+        the resolved ``_config_object``, add defaults, and validate.
+
+        ``system.config`` holds case-relevant settings (freq, mva, etc.)
+        and is written to data files.  ``system.runtime`` holds
+        machine/environment settings (numba, sparselib, dime, etc.)
+        and is persisted only in rc files.
         """
         system = self.system
 
+        # --- Case config (section: "System") ---
         system.config = Config(system.__class__.__name__, dct=config)
+        _runtime_hint = 'Use [Runtime] section instead.'
+        system.config._deprecated.update({
+            'warn_limits': '',
+            # Fields moved to [Runtime] in v2.0
+            'numba': _runtime_hint, 'numba_parallel': _runtime_hint,
+            'numba_nopython': _runtime_hint,
+            'yapf_pycode': _runtime_hint, 'save_stats': _runtime_hint,
+            'ipadd': _runtime_hint, 'sparselib': _runtime_hint,
+            'seed': _runtime_hint, 'np_divide': _runtime_hint,
+            'np_invalid': _runtime_hint,
+            'dime_enabled': _runtime_hint, 'dime_name': _runtime_hint,
+            'dime_address': _runtime_hint,
+        })
         system.config.load(system._config_object)
-
-        # custom configuration for system goes after this line
-        self._add_system_defaults()
-
-        system.config._deprecated.update({'warn_limits'})
-
+        self._add_case_defaults()
         system.config.check()
+
+        # --- Runtime config (section: "Runtime") ---
+        system.runtime = Config('Runtime')
+        system.runtime.load(system._config_object)
+        self._add_runtime_defaults()
+        system.runtime.check()
+
         self.configure_numpy(
-            seed=system.config.seed,
-            divide=system.config.np_divide,
-            invalid=system.config.np_invalid,
+            seed=system.runtime.seed,
+            divide=system.runtime.np_divide,
+            invalid=system.runtime.np_invalid,
         )
 
     # ------------------------------------------------------------------
@@ -215,57 +236,74 @@ class SystemConfigRuntime:
     #  Internal helpers
     # ------------------------------------------------------------------
 
-    def _add_system_defaults(self):
+    def _add_case_defaults(self):
         """
-        Add default system config entries and metadata.
+        Add default case-relevant config entries (written to data files).
         """
         system = self.system
         system.config.add(OrderedDict((('freq', 60),
                                        ('mva', 100),
-                                       ('ipadd', 1),
-                                       ('seed', 'None'),
                                        ('diag_eps', 1e-8),
                                        ('warn_abnormal', 1),
-                                       ('dime_enabled', 0),
-                                       ('dime_name', 'andes'),
-                                       ('dime_address', 'ipc:///tmp/dime2'),
-                                       ('numba', 0),
-                                       ('numba_parallel', 0),
-                                       ('numba_nopython', 1),
-                                       ('yapf_pycode', 0),
-                                       ('save_stats', 0),
-                                       ('np_divide', 'warn'),
-                                       ('np_invalid', 'warn'),
                                        )))
         system.config.add_extra("_help",
                                 freq='base frequency [Hz]',
                                 mva='system base MVA',
-                                ipadd='use spmatrix.ipadd if available',
-                                seed='seed (or None) for random number generator',
                                 diag_eps='small value for Jacobian diagonals',
                                 warn_abnormal='warn initialization out of normal values',
-                                numba='use numba for JIT compilation',
-                                numba_parallel='enable parallel for numba.jit',
-                                numba_nopython='nopython mode for numba',
-                                yapf_pycode='format generated code with yapf',
-                                save_stats='store statistics of function calls',
-                                np_divide='treatment for division by zero',
-                                np_invalid='treatment for invalid floating-point ops.',
                                 )
         system.config.add_extra("_alt",
                                 freq="float",
                                 mva="float",
-                                ipadd=(0, 1),
-                                seed='int or None',
                                 warn_abnormal=(0, 1),
-                                numba=(0, 1),
-                                numba_parallel=(0, 1),
-                                numba_nopython=(0, 1),
-                                yapf_pycode=(0, 1),
-                                save_stats=(0, 1),
-                                np_divide={'ignore', 'warn', 'raise', 'call', 'print', 'log'},
-                                np_invalid={'ignore', 'warn', 'raise', 'call', 'print', 'log'},
                                 )
+
+    def _add_runtime_defaults(self):
+        """
+        Add default machine/environment config entries (rc files only).
+        """
+        system = self.system
+        system.runtime.add(OrderedDict((('numba', 0),
+                                        ('numba_parallel', 0),
+                                        ('numba_nopython', 1),
+                                        ('yapf_pycode', 0),
+                                        ('save_stats', 0),
+                                        ('ipadd', 1),
+                                        ('sparselib', 'klu'),
+                                        ('seed', 'None'),
+                                        ('np_divide', 'warn'),
+                                        ('np_invalid', 'warn'),
+                                        ('dime_enabled', 0),
+                                        ('dime_name', 'andes'),
+                                        ('dime_address', 'ipc:///tmp/dime2'),
+                                        )))
+        system.runtime.add_extra("_help",
+                                 numba='use numba for JIT compilation',
+                                 numba_parallel='enable parallel for numba.jit',
+                                 numba_nopython='nopython mode for numba',
+                                 yapf_pycode='format generated code with yapf',
+                                 save_stats='store statistics of function calls',
+                                 ipadd='use spmatrix.ipadd if available',
+                                 sparselib='linear sparse solver name',
+                                 seed='seed (or None) for random number generator',
+                                 np_divide='treatment for division by zero',
+                                 np_invalid='treatment for invalid floating-point ops.',
+                                 dime_enabled='enable DiME streaming',
+                                 dime_name='DiME client name',
+                                 dime_address='DiME server address',
+                                 )
+        system.runtime.add_extra("_alt",
+                                 numba=(0, 1),
+                                 numba_parallel=(0, 1),
+                                 numba_nopython=(0, 1),
+                                 yapf_pycode=(0, 1),
+                                 save_stats=(0, 1),
+                                 ipadd=(0, 1),
+                                 sparselib=("klu", "umfpack", "spsolve", "cupy"),
+                                 seed='int or None',
+                                 np_divide={'ignore', 'warn', 'raise', 'call', 'print', 'log'},
+                                 np_invalid={'ignore', 'warn', 'raise', 'call', 'print', 'log'},
+                                 )
 
     def set_config(self, config=None):
         """
@@ -276,10 +314,12 @@ class SystemConfigRuntime:
         """
         system = self.system
         if config is not None:
-            # set config for system
             if system.__class__.__name__ in config:
                 system.config.add(config[system.__class__.__name__])
                 logger.debug("Config: set for System")
+            if 'Runtime' in config:
+                system.runtime.add(config['Runtime'])
+                logger.debug("Config: set for Runtime")
 
     def collect_config(self):
         """
@@ -293,6 +333,7 @@ class SystemConfigRuntime:
         system = self.system
         config_dict = configparser.ConfigParser()
         config_dict[system.__class__.__name__] = system.config.as_dict(refresh=True)
+        config_dict['Runtime'] = system.runtime.as_dict(refresh=True)
 
         all_with_config = OrderedDict(list(system.routines.items()) +
                                       list(system.models.items()))

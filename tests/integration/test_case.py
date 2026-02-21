@@ -162,7 +162,7 @@ class TestKundur2AreaPSSE(unittest.TestCase):
         )
 
     def test_psse_tds_run_with_stats(self):
-        self.ss_psse.config.save_stats = 1
+        self.ss_psse.runtime.save_stats = 1
         self.ss_psse.TDS.config.tf = 3
         self.ss_psse.TDS.run()
 

@@ -207,12 +207,21 @@ class Config:
         self._help = OrderedDict()
         self._tex = OrderedDict()
         self._alt = OrderedDict()
-        self._deprecated = set()
+        self._deprecated = {}
         self.add(dct, **kwargs)
+
+    def _warn_deprecated(self, key, level='warning'):
+        """Log a deprecation message for *key*, including the caller's hint
+        if one was registered in ``_deprecated[key]``."""
+        hint = self._deprecated.get(key, '')
+        msg = "Config '%s.%s' is deprecated and ignored." % (self._name, key)
+        if hint:
+            msg += ' ' + hint
+        getattr(logger, level)(msg)
 
     def __setattr__(self, key, value):
         if not key.startswith('_') and hasattr(self, '_deprecated') and key in self._deprecated:
-            logger.debug("Config field '%s' is deprecated and ignored.", key)
+            self._warn_deprecated(key, level='debug')
             return
         super().__setattr__(key, value)
 
@@ -284,6 +293,10 @@ class Config:
         for key, val in kwargs.items():
             # skip existing entries that are already loaded (from config files)
             if key in self.__dict__:
+                continue
+
+            if hasattr(self, '_deprecated') and key in self._deprecated:
+                self._warn_deprecated(key)
                 continue
 
             self._set(key, val)
@@ -373,6 +386,12 @@ class Config:
         Check the validity of config values.
         """
         for key, val in self.as_dict().items():
+            if key not in self._help:
+                logger.warning(
+                    "Config '%s.%s' is not recognized and has no effect.",
+                    self._name, key)
+                continue
+
             if key not in self._alt:
                 continue
 
@@ -401,6 +420,9 @@ class Config:
             kwargs.update(dct)
 
         for key, val in kwargs.items():
+            if hasattr(self, '_deprecated') and key in self._deprecated:
+                self._warn_deprecated(key)
+                continue
             self._set(key, val)
 
         self.check()
