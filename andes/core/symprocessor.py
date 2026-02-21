@@ -26,6 +26,30 @@ sp.OldPiecewise = sp.Piecewise
 sp.Piecewise = FixPiecewise
 
 
+def _warn_missing_e_str(class_name, var_name, eqn_type, has_numeric):
+    """Warn if a variable has no ``e_str`` but the model defines a numeric method.
+
+    Parameters
+    ----------
+    class_name : str
+        Model class name (for the log message).
+    var_name : str
+        Variable name (e.g., ``'f'``).
+    eqn_type : str
+        ``'f'`` for differential or ``'g'`` for algebraic.
+    has_numeric : bool
+        Whether the model has the corresponding ``{eqn_type}_numeric`` method.
+    """
+    if has_numeric:
+        logger.warning(
+            "%s.%s has no e_str but model defines %s_numeric(). "
+            "If %s_numeric writes to %s.e, set e_str='0' to "
+            "enable assembly into dae.%s.",
+            class_name, var_name, eqn_type,
+            eqn_type, var_name, eqn_type,
+        )
+
+
 class SymProcessor:
     """
     A helper class for symbolic processing and code generation.
@@ -289,8 +313,10 @@ class SymProcessor:
 
         for vlist, elist, ename, eargs in zip(vars_list, expr_list, eqn_names, eqn_args):
             sym_args = list()
+            num_flag = getattr(self.parent.flags, f'{ename}_num', False)
             for name, instance in vlist.items():
                 if instance.e_str is None:
+                    _warn_missing_e_str(self.class_name, name, ename, num_flag)
                     elist.append(0)
                 else:
                     try:
