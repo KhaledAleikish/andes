@@ -109,9 +109,9 @@ def run_cmp(raw, dyr, fault_line, t1=1, t2=1.1, tf=20, tstep=1/60, no_output=Tru
     # configure simulation parameters
     ss.config.warn_abnormal = 0
 
-    ss.add('Toggle', {'model': 'Line', 'dev': fault_line, 't': t1})
+    ss.add('Toggle', model='Line', dev=fault_line, t=t1)
     if reconnect:
-        ss.add('Toggle', {'model': 'Line', 'dev': fault_line, 't': t2})
+        ss.add('Toggle', model='Line', dev=fault_line, t=t2)
 
     ss.setup()
     ss.PFlow.run()

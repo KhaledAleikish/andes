@@ -30,11 +30,7 @@ print(ss.MyModel.doc())
 ss = andes.load('case.xlsx', setup=False)
 
 # Add test device
-ss.add('MyModel', {
-    'bus': 1,
-    'param1': 0.5,
-    # ...
-})
+ss.add('MyModel', bus=1, param1=0.5)
 
 ss.setup()
 
@@ -91,7 +87,7 @@ assert deviation < 1e-6, "States should not change in flat run"
 ss = andes.load('case.xlsx', setup=False)
 
 # Add disturbance
-ss.add('Fault', {'bus': 3, 'tf': 1.0, 'tc': 1.1})
+ss.add('Fault', bus=3, tf=1.0, tc=1.1)
 
 ss.setup()
 ss.PFlow.run()
@@ -158,7 +154,7 @@ class TestMyModel:
     def test_tds_fault(self):
         """TDS with fault completes."""
         ss = andes.load('test_case.xlsx', setup=False)
-        ss.add('Fault', {'bus': 3, 'tf': 1.0, 'tc': 1.1})
+        ss.add('Fault', bus=3, tf=1.0, tc=1.1)
         ss.setup()
         ss.PFlow.run()
         ss.TDS.config.tf = 5

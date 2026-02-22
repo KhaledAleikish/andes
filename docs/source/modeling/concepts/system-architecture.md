@@ -347,7 +347,7 @@ Devices can be added programmatically before `setup()`:
 
 ```python
 ss = andes.load('case.xlsx', setup=False)
-ss.add('Fault', {'bus': 3, 'tf': 1.0, 'tc': 1.1})
+ss.add('Fault', bus=3, tf=1.0, tc=1.1)
 ss.setup()
 ```
 

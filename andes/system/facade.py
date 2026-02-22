@@ -359,11 +359,11 @@ class System:
         self.is_setup = False
         self.setup()
 
-    def add(self, model, param_dict=None, **kwargs):
+    def add(self, model_name, param_dict=None, **kwargs):
         """
         Add a device instance for an existing model.
 
-        This method calls the ``add`` method of `model` and registers the device `idx` to group.
+        This method calls the ``add`` method of the model and registers the device `idx` to its group.
 
         Parameters can be passed as a dictionary, as keyword arguments, or both.
         When both are provided, keyword arguments are merged into the dictionary
@@ -371,7 +371,7 @@ class System:
 
         Parameters
         ----------
-        model : str
+        model_name : str
             Name of the model (e.g., ``'Fault'``, ``'Toggle'``, ``'PQ'``).
         param_dict : dict, optional
             Dictionary of parameter names to values.
@@ -385,20 +385,19 @@ class System:
 
         Examples
         --------
-        The following are equivalent::
+        Keyword arguments are the preferred style::
 
-            ss.add('Fault', {'bus': 5, 'tf': 1.0, 'tc': 1.1})
             ss.add('Fault', bus=5, tf=1.0, tc=1.1)
 
-        For models that have a parameter named ``model`` (e.g., ``Alter``,
-        ``Toggle``), the dictionary form must be used to avoid collision
-        with the first positional argument::
+        Models with a ``model`` parameter (e.g., ``Alter``, ``Toggle``)
+        can now use keyword arguments directly::
 
-            ss.add('Alter', {'model': 'TGOV1', 'dev': 1, 'src': 'paux0',
-                             't': 1.0, 'method': '=', 'amount': 0.05})
+            ss.add('Alter', model='TGOV1', dev=1, src='paux0',
+                   t=1.0, method='=', amount=0.05)
+            ss.add('Toggle', model='Line', dev='Line_5', t=1.0)
         """
-        if model not in self.models and (model not in self.model_aliases):
-            logger.warning("<%s> is not an existing model.", model)
+        if model_name not in self.models and (model_name not in self.model_aliases):
+            logger.warning("<%s> is not an existing model.", model_name)
             return
 
         if self.is_setup:
@@ -407,7 +406,7 @@ class System:
                 "To add devices, reload the case with setup=False, add devices, then call setup()."
             )
 
-        group_name = self.__dict__[model].group
+        group_name = self.__dict__[model_name].group
         group = self.groups[group_name]
 
         if param_dict is None:
@@ -422,9 +421,9 @@ class System:
         if idx is not None and (not isinstance(idx, str) and np.isnan(idx)):
             idx = None
 
-        idx = group.get_next_idx(idx=idx, model_name=model)
-        self.__dict__[model].add(idx=idx, **param_dict)
-        group.add(idx=idx, model=self.__dict__[model])
+        idx = group.get_next_idx(idx=idx, model_name=model_name)
+        self.__dict__[model_name].add(idx=idx, **param_dict)
+        group.add(idx=idx, model=self.__dict__[model_name])
 
         return idx
 

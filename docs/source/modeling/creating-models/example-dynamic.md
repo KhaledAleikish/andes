@@ -285,7 +285,7 @@ import andes
 ss = andes.load('kundur_full.xlsx', setup=False)
 
 # Add BusFreq to bus 1
-ss.add('BusFreq', {'bus': 1, 'Tf': 0.02, 'Tw': 0.1})
+ss.add('BusFreq', bus=1, Tf=0.02, Tw=0.1)
 
 ss.setup()
 ss.PFlow.run()

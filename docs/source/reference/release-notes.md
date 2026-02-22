@@ -160,8 +160,12 @@ API improvements:
   (State, Algeb, ExtState, ExtAlgeb, Observable).
 - Add fuzzy-match warnings for unrecognized field names in ``System.add()``,
   suggesting close matches with ``difflib.get_close_matches``.
-- Document ``System.add()`` kwargs support and the ``model`` parameter
-  collision caveat for ``Alter`` and ``Toggle``.
+- Rename ``System.add()`` first positional parameter from ``model`` to
+  ``model_name`` to resolve the keyword collision with ``Alter`` and
+  ``Toggle``'s ``model`` device parameter. All models (including ``Alter``
+  and ``Toggle``) can now use kwargs: ``ss.add('Toggle', model='Line',
+  dev='Line_5', t=1.0)``. Dict form remains supported for backward
+  compatibility.
 - Add ``CPF.run_qv()`` and ``CPF.plot_qv()`` for QV curve analysis at a
   specified bus. Delegates to the existing continuation engine with Q-only
   targets; results stored in ``qv_q``, ``qv_v``, and ``qv_bus``.
