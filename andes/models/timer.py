@@ -8,8 +8,6 @@ from andes.core.model import Model, ModelData
 from andes.core.param import DataParam, IdxParam, NumParam, TimerParam
 from andes.core.service import ConstService
 from andes.core.var import ExtAlgeb
-from andes.shared import tqdm
-
 logger = logging.getLogger(__name__)
 
 
@@ -81,10 +79,9 @@ class Toggle(ToggleData, Model):
             u0 = instance.get(src='u', attr='v', idx=self.dev.v[i])
             self.system.set_status(self.model.v[i], self.dev.v[i], 1 - u0)
             action = True
-            if self.system.options.get("verbose", 20) <= 20:
-                tqdm.write(f'<Toggle {self.idx.v[i]}>: '
-                           f'{self.model.v[i]}.{self.dev.v[i]} status '
-                           f'changed to {1-u0:g} at t={self.t.v[i]} sec.')
+            logger.info('<Toggle %s>: %s.%s status changed to %g at t=%s sec.',
+                        self.idx.v[i], self.model.v[i], self.dev.v[i],
+                        1-u0, self.t.v[i])
         return action
 
 
@@ -215,10 +212,9 @@ class Fault(ModelData, Model):
 
             self.uf.v[i] = 1
             self._vstore = np.array(self.system.dae.y[self.system.Bus.n:])
-            logger.debug("Pre-fault algebraic variables:\n" + str(self._vstore))
-            if self.system.options.get("verbose", 20) <= 20:
-                tqdm.write(f'<Fault {self.idx.v[i]}>: '
-                           f'Applying fault on Bus (idx={self.bus.v[i]}) at t={self.tf.v[i]} sec.')
+            logger.debug("Pre-fault algebraic variables:\n%s", self._vstore)
+            logger.info('<Fault %s>: Applying fault on Bus (idx=%s) at t=%s sec.',
+                        self.idx.v[i], self.bus.v[i], self.tf.v[i])
 
             action = True
         return action
@@ -254,9 +250,8 @@ class Fault(ModelData, Model):
                     else:
                         logger.error("Unsupport fault voltage restoration mode")
 
-                if self.system.options.get("verbose", 20) <= 20:
-                    tqdm.write(f'<Fault {self.idx.v[i]}>: '
-                               f'Clearing fault on Bus (idx={self.bus.v[i]}) at t={self.tc.v[i]} sec.')
+                logger.info('<Fault %s>: Clearing fault on Bus (idx=%s) at t=%s sec.',
+                            self.idx.v[i], self.bus.v[i], self.tc.v[i])
 
                 action = True
         return action
@@ -352,10 +347,8 @@ class AlterModel(Model):
                 continue
 
             model.set(src=src, idx=idx, attr=attr, value=vnew)
-            if self.system.options.get("verbose", 20) <= 20:
-                tqdm.write('<Alter %s>: set %s.%s.%s.%s=%.6g at t=%.6g. Previous value was %.6g.' % (
-                    self.idx.v[ii], self.model.v[ii], idx, src, attr, vnew, self.t.v[ii], v0
-                ))
+            logger.info('<Alter %s>: set %s.%s.%s.%s=%.6g at t=%.6g. Previous value was %.6g.',
+                        self.idx.v[ii], self.model.v[ii], idx, src, attr, vnew, self.t.v[ii], v0)
             action = True
 
         return action

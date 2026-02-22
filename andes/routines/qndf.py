@@ -5,7 +5,7 @@ import logging
 import numpy as np
 
 from andes.routines.adaptive import accept_reject, candidate_h, check_adaptive_bust, weighted_rms_error
-from andes.shared import sparse, matrix, tqdm
+from andes.shared import sparse, matrix
 
 logger = logging.getLogger(__name__)
 
@@ -372,9 +372,10 @@ class QNDF:
             tds.deltat = min(h * 0.5, tds.deltatmax)
             tds.last_converged = False
 
-            if system.options.get("verbose", 20) <= 10:
-                tqdm.write(f'* QNDF: max iter {tds.config.max_iter} reached for '
-                           f't={dae.t:.6f}s, h={h:.6f}s, max inc={mis:.4g}')
+            logger.debug('* QNDF: max iter %d reached for t=%.6f, h=%.6f, max inc=%.4g',
+                         tds.config.max_iter, dae.t, h, mis)
+
+            if logger.isEnabledFor(logging.DEBUG):
                 g_max = np.argmax(abs(dae.g))
                 inc_max = np.argmax(abs(inc))
                 tds._debug_g(g_max)

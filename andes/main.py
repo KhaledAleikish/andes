@@ -38,6 +38,14 @@ from andes.utils.paths import get_config_path, get_log_dir, tests_root
 logger = logging.getLogger(__name__)
 
 
+class TqdmStreamHandler(logging.StreamHandler):
+    """StreamHandler that uses tqdm.write() to avoid corrupting progress bars."""
+
+    def emit(self, record):
+        from tqdm import tqdm
+        tqdm.write(self.format(record), file=self.stream)
+
+
 def config_logger(
     stream_level=logging.INFO,
     *,
@@ -90,7 +98,7 @@ def config_logger(
     if len(lg.handlers) == 0:
         # create a StreamHandler
         if stream is True:
-            sh = logging.StreamHandler()
+            sh = TqdmStreamHandler()
             sh.setFormatter(sh_formatter)
             sh.setLevel(stream_level)
             lg.addHandler(sh)
@@ -114,7 +122,13 @@ def config_logger(
         set_logger_level(logger, logging.FileHandler, file_level)
 
     if not is_interactive():
-        coloredlogs.install(logger=lg, level=stream_level, fmt=sh_formatter_str)
+        # Use our TqdmStreamHandler so coloredlogs doesn't install its own
+        sh_handlers = [h for h in lg.handlers if isinstance(h, TqdmStreamHandler)]
+        if sh_handlers:
+            coloredlogs.install(logger=lg, level=stream_level,
+                                fmt=sh_formatter_str, handlers=sh_handlers)
+        else:
+            coloredlogs.install(logger=lg, level=stream_level, fmt=sh_formatter_str)
 
 
 def edit_conf(edit_config: Optional[Union[str, bool]] = ""):
@@ -535,8 +549,7 @@ def _run_mp_proc(cases, ncpu=NCPUS_PHYSICAL, **kwargs):
         jobs.append(job)
         job.start()
         start_msg = f'Process {idx:d} for "{file:s}" started.'
-        print(start_msg)
-        logger.debug(start_msg)
+        logger.info(start_msg)
         if (idx % ncpu == ncpu - 1) or (idx == len(cases) - 1):
             sleep(0.1)
             for job in jobs:
@@ -563,8 +576,8 @@ def _run_mp_pool(cases, ncpu=NCPUS_PHYSICAL, verbose=logging.INFO, **kwargs):
     """
 
     pool = Pool(ncpu)
-    print("Cases are processed in the following order:")
-    print("\n".join([f'"{name}"' for name in cases]))
+    logger.info("Cases are processed in the following order:\n%s",
+                "\n".join([f'"{name}"' for name in cases]))
 
     ret = pool.map(
         partial(
@@ -669,7 +682,7 @@ def run(
         log_files = find_log_path(logger)
         if len(log_files) > 0:
             log_paths = "\n".join(log_files)
-            print(f'Log saved to "{log_paths}".')
+            logger.info('Log saved to "%s".', log_paths)
 
     t0, s0 = elapsed(t0)
 
@@ -685,14 +698,14 @@ def run(
 
     if len(cases) == 1:
         if ex_code == 0:
-            print(f"-> Single process finished in {s0}.")
+            logger.info("-> Single process finished in %s.", s0)
         else:
-            print(f"-> Single process exit with an error in {s0}.")
+            logger.warning("-> Single process exit with an error in %s.", s0)
     elif len(cases) > 1:
         if ex_code == 0:
-            print(f"-> Multiprocessing finished in {s0}.")
+            logger.info("-> Multiprocessing finished in %s.", s0)
         else:
-            print(f"-> Multiprocessing exit with an error in {s0}.")
+            logger.warning("-> Multiprocessing exit with an error in %s.", s0)
 
     # IPython interactive shell
     if shell is True:

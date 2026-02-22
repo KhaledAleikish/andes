@@ -103,6 +103,11 @@ Time-domain simulation:
   via ``fg_update(init=True)``.  Internally, ``Model.snapshot_init()`` /
   ``Model.restore_init()`` save and restore model-level mutable state;
   ``NumParam`` and ``ConstService`` each store a ``_v_t0`` snapshot.
+- Add ``andes.rl`` module with ``AndesEnv``, a Gymnasium-compatible environment
+  for reinforcement learning.  Supports configurable observations (with optional
+  device idx selection), group-level and model-level action setpoints, custom
+  reward/disturbance functions, and fast reset via ``TDS.reinit()``.  Install
+  with ``pip install andes[rl]``.
 
 PSS/E parser:
 
@@ -219,6 +224,21 @@ Upgrade guide — ``set()`` / ``alter()`` consolidation:
 - **Time constant updates are automatic**: When modifying a time constant
   parameter (one whose variable has a ``t_const`` attribute), ``set()``
   automatically updates ``dae.Tf`` and ``TDS.Teye``.
+
+Logging:
+
+- Unify all runtime output through Python's ``logging`` module with a single
+  ``TqdmStreamHandler`` that delegates to ``tqdm.write()`` to avoid corrupting
+  progress bars. Removes 9 ad-hoc ``tqdm.write()`` call sites and their
+  ``system.options["verbose"]`` guards. Timer events (Toggle, Fault, Alter,
+  TimeSeries) log at INFO; convergence diagnostics (daeint, QNDF) log at DEBUG.
+  Verbosity is now controlled entirely by ``logging.setLevel()``
+  (CLI: ``andes -v 10`` for DEBUG, ``-v 30`` for WARNING-only).
+  Library callers (e.g., ``andes.rl``) are silent by default since no handler
+  is installed without an explicit ``config_logger()`` call.
+- Convert operational ``print()`` calls in ``codegen.py`` and ``io/txt.py`` to
+  ``logger.info()`` / ``logger.error()``. CLI user-facing output
+  (``print_license``, ``versioninfo``, ``plot``) remains as ``print()``.
 
 Bug fixes:
 

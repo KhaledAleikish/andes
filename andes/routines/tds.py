@@ -13,7 +13,7 @@ from andes.routines.base import BaseRoutine
 from andes.routines.daeint import Trapezoid, method_map
 from andes.routines.qndf import QNDFCache
 from andes.routines.criteria import deltadelta
-from andes.shared import get_tqdm, matrix, np, pd, spdiag, tqdm, tqdm_nb
+from andes.shared import get_tqdm, matrix, np, pd, spdiag, tqdm_nb
 from andes.utils.misc import elapsed, is_interactive, is_notebook
 from andes.utils.tab import Tab
 
@@ -327,8 +327,7 @@ class TDS(BaseRoutine):
             logger.warning("Initialization results were not verified.")
 
         if system.dae.n == 0:
-            if system.options.get("verbose", 20) <= 20:
-                tqdm.write('No differential equation detected.')
+            logger.info('No differential equation detected.')
         return system.dae.xy
 
     def summary(self):

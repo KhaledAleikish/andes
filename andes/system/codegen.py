@@ -106,16 +106,14 @@ class CodegenManager:
             models = system._get_models(models)
 
         total = len(models)
-        width = len(str(total))
 
         if nomp is False:
-            print(f"Generating code for {total} models on {ncpu} processes.")
+            logger.info("Generating code for %d models on %d processes.", total, ncpu)
             self._mp_prepare(models, quick, pycode_path, ncpu=ncpu)
 
         else:
             for idx, (name, model) in enumerate(models.items()):
-                print(f"\r\x1b[K Generating code for {name} ({idx+1:>{width}}/{total:>{width}}).",
-                      end='\r', flush=True)
+                logger.info("Generating code for %s (%d/%d).", name, idx + 1, total)
                 model.prepare(quick=quick, pycode_path=pycode_path)
 
         if len(models) > 0:
