@@ -248,6 +248,7 @@ class DAETimeSeries:
         self._fs = OrderedDict()
         self._hs = OrderedDict()
         self._is = OrderedDict()
+        self._bs = OrderedDict()
 
         self.unpack_np(attr=None, warn_empty=False)
         self.unpack_df(attr=None)

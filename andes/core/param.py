@@ -408,6 +408,14 @@ class NumParam(BaseParam):
         True if the parameter is a DC voltage pu quantity under
         device base.
 
+    Attributes
+    ----------
+    vin : np.ndarray or None
+        Raw input values before per-unit conversion.  Used by
+        :meth:`restore` (pre-pu restore for ``System.reset``).
+    _v_t0 : np.ndarray or None
+        Post-pu ``v`` at t=0, saved by :meth:`snapshot_init`.  Used by
+        :meth:`restore_init` to reset ``v`` during ``TDS.reinit``.
     """
 
     def __init__(self,
@@ -457,6 +465,7 @@ class NumParam(BaseParam):
 
         self.pu_coeff = np.ndarray([])
         self.vin = None  # values from input
+        self._v_t0 = None  # post-pu v at t=0, saved by snapshot_init()
         self.vrange = vrange
         self.vtype = vtype
 
@@ -570,6 +579,30 @@ class NumParam(BaseParam):
         `pu_coeff` will not be overwritten.
         """
         self.v[:] = self.vin
+
+    def snapshot_init(self):
+        """
+        Save the current post-pu ``v`` into ``_v_t0`` for :meth:`restore_init`.
+
+        Unlike :meth:`restore` which copies pre-pu ``vin`` back to ``v``,
+        this saves the fully converted (post-pu) values so that
+        ``restore_init`` can reset ``v`` without re-running pu conversion.
+
+        Called by ``Model.snapshot_init`` at the end of ``TDS.init()``.
+        """
+        self._v_t0 = self.v.copy()
+
+    def restore_init(self):
+        """
+        Restore ``v`` from ``_v_t0`` saved by :meth:`snapshot_init`.
+
+        This restores post-pu values directly.  Contrast with :meth:`restore`,
+        which copies pre-pu ``vin`` into ``v``.
+
+        Called by ``Model.restore_init`` during ``TDS.reinit()``.
+        """
+        if self._v_t0 is not None:
+            self.v[:] = self._v_t0
 
 
 class TimerParam(NumParam):

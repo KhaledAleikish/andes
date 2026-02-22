@@ -134,6 +134,9 @@ class ConstService(BaseService):
     ----------
     v : array-like or a scalar
         ConstService value
+    _v_t0 : np.ndarray or None
+        ``v`` at t=0, saved by :meth:`snapshot_init`.  Used by
+        :meth:`restore_init` to reset ``v`` to the post-init baseline.
     """
 
     def __init__(self,
@@ -150,7 +153,27 @@ class ConstService(BaseService):
         self.v_str: str = v_str
         self.v_numeric: Callable = v_numeric
         self.v: Union[float, int, np.ndarray] = 0.0
+        self._v_t0: Optional[np.ndarray] = None
         self.sequential = True
+
+    def snapshot_init(self):
+        """
+        Save the current ``v`` into ``_v_t0`` for :meth:`restore_init`.
+
+        Called by ``Model.snapshot_init`` at the end of ``TDS.init()``.
+        Only operates on array-valued services (skips scalars).
+        """
+        if isinstance(self.v, np.ndarray):
+            self._v_t0 = self.v.copy()
+
+    def restore_init(self):
+        """
+        Restore ``v`` from ``_v_t0`` saved by :meth:`snapshot_init`.
+
+        Called by ``Model.restore_init`` during ``TDS.reinit()``.
+        """
+        if self._v_t0 is not None:
+            self.v[:] = self._v_t0
 
 
 class VarService(ConstService):
@@ -213,6 +236,14 @@ class VarService(ConstService):
                          v_str=v_str,
                          v_numeric=v_numeric)
         self.sequential = sequential
+
+    def snapshot_init(self):
+        """No-op: VarService is recomputed each step."""
+        pass
+
+    def restore_init(self):
+        """No-op: VarService is recomputed each step."""
+        pass
 
 
 class EventFlag(VarService):

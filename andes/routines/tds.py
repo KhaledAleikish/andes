@@ -302,6 +302,17 @@ class TDS(BaseRoutine):
         self.xs = np.zeros_like(system.dae.x)
         self.ys = np.zeros_like(system.dae.y)
 
+        # save post-init DAE state for reinit()
+        self._x_t0 = system.dae.x.copy()
+        self._y_t0 = system.dae.y.copy()
+
+        # snapshot post-init model state for reinit()
+        # Covers device status (u, ue), ConstServices (Fault.uf, vref0, paux0),
+        # and NumParams that Alter +/-/*/÷ may modify during simulation
+        for mdl in system.exist.pflow_tds.values():
+            if mdl.n > 0:
+                mdl.snapshot_init()
+
         _, s1 = elapsed(t0)
 
         logger.info("Initialization for dynamics completed in %s.", s1)
@@ -1080,28 +1091,65 @@ class TDS(BaseRoutine):
             logger.debug(f'{v:<10} {self.system.dae.xy_name[v]:<20} {assoc_vars[v]:<20g} '
                          f'{self.system.dae.fg[v]:<20g}')
 
-    def reset(self):
+    def _reset_integration(self):
         """
-        Reset internal states to pre-init condition.
+        Reset integration state that changes during ``TDS.run()``.
+
+        Preserves infrastructure that is invariant between episodes
+        (``Teye``, ``qg``, sparse patterns, addresses).
+        Called by both :meth:`reset` and :meth:`reinit`.
         """
+        # step-size control
         self.deltat = 0
         self.deltatmin = 0
         self.deltatmin_adapt = 0
         self.deltatmax = 0
         self.h = 0
         self.last_pc = 0.0
-        self.Teye = None
-        self.qg = np.array([])
 
+        # convergence / error tracking
         self.converged = False
         self.last_converged = False
         self.busted = False
+        self.chatter = False
+        self.err_msg = ''
         self.niter = 0
+        self.mis = [1, 1]
+
+        # event scheduling
         self._switch_idx = 0        # index into `System.switch_times`
         self._last_switch_t = -999  # the last event time
         self.custom_event = False
         self._adaptive_nolte_steps = 0
-        self.mis = [1, 1]
+
+        # statistics
+        self.call_stats = list()
+
+        # predictor / scratch arrays (None before first init)
+        if self.x0 is not None:
+            self.x0[:] = 0
+        if self.y0 is not None:
+            self.y0[:] = 0
+        if self.f0 is not None:
+            self.f0[:] = 0
+        if self.xs is not None:
+            self.xs[:] = 0
+        if self.ys is not None:
+            self.ys[:] = 0
+
+        # QNDF integration history (uses existing reset_for_event API)
+        if self.qndf_cache is not None:
+            self.qndf_cache.reset_for_event(self.system.dae.x)
+
+    def reset(self):
+        """
+        Reset internal states to pre-init condition.
+        """
+        self._reset_integration()
+
+        # infrastructure teardown (not needed for reinit)
+        self.Teye = None
+        self.qg = np.array([])
         self.system.dae.t = np.array(0.0)
         self.pbar = None
         self.plotter = None
@@ -1109,6 +1157,67 @@ class TDS(BaseRoutine):
 
         self.qndf_cache = None
         self.initialized = False
+
+    def reinit(self):
+        """
+        Reset TDS to post-init state for a new simulation episode.
+
+        Re-derives all dependent state (discrete flags, residuals, antiwindup
+        bindings) from saved initial ``(x, y)`` via idempotent evaluation.
+        Invariants (addresses, sparse patterns, ``Teye``) are preserved.
+
+        This is designed for RL training loops where ``TDS.run()`` is called
+        repeatedly with different disturbances or control actions::
+
+            ss = andes.load('case.raw')
+            ss.PFlow.run()
+            ss.TDS.init()
+
+            for episode in range(100_000):
+                ss.TDS.reinit()
+                ss.Alter.amount.v[0] = random()
+                ss.TDS.config.tf = 20.0
+                ss.TDS.run(no_summary=True)
+
+        Restores: DAE state ``(x, y)``, device status ``(u, ue)``,
+        ConstService values (setpoints, Fault flags), NumParam values
+        (including those modified by ``Alter``), and observable variables.
+        """
+        if not self.initialized:
+            raise RuntimeError("Call TDS.init() before reinit()")
+
+        system = self.system
+        dae = system.dae
+
+        # 1. Restore the 2 essential arrays
+        dae.x[:] = self._x_t0
+        dae.y[:] = self._y_t0
+        dae.set_t(0.0)
+        dae.kcount = 0
+        dae.clear_fg()
+
+        # 2. Clear time series
+        dae.ts.reset()
+
+        # --- Restore model state (device status, services, params) ---
+        for mdl in system.exist.pflow_tds.values():
+            if mdl.n > 0:
+                mdl.restore_init()
+
+        # --- Re-derive all dependent state ---
+        system.vars_to_models()
+        self._reset_integration()
+        self.fg_update(system.exist.tds, init=True)
+
+        for item in system.antiwindups:
+            for key, _, eqval in item.x_set:
+                np.put(dae.f, key, eqval)
+
+        system.b_update(system.exist.pflow_tds)
+        self.calc_h()
+
+        # --- Episode bookkeeping ---
+        system.exit_code = 0
 
     def rewind(self, t):
         """

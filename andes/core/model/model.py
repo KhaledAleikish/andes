@@ -1016,6 +1016,48 @@ class Model:
         self.flags.address = False
         self.flags.initialized = False
 
+    def snapshot_init(self):
+        """
+        Save model-level mutable state at t=0 for :meth:`restore_init`.
+
+        Captures:
+
+        - ``_uv_t0``: tuple of ``(u.v, ue.v)`` copies — device on/off status
+        - Each ``ConstService._v_t0``: service value at t=0
+        - Each ``NumParam._v_t0``: parameter value at t=0 (post-pu)
+
+        Called by ``TDS.init()`` after initialization is complete.
+        """
+        self._uv_t0 = (self.u.v.copy(), self.ue.v.copy())
+
+        for s in self.services.values():
+            s.snapshot_init()
+        for s in self.services_post.values():
+            s.snapshot_init()
+        for p in self.num_params.values():
+            p.snapshot_init()
+
+    def restore_init(self):
+        """
+        Restore model-level mutable state from :meth:`snapshot_init`.
+
+        Restores ``u.v``, ``ue.v``, all ConstService values, and all
+        NumParam values to their t=0 baseline.
+
+        Called by ``TDS.reinit()`` before re-deriving dependent state.
+        """
+        if hasattr(self, '_uv_t0'):
+            uv, uev = self._uv_t0
+            self.u.v[:] = uv
+            self.ue.v[:] = uev
+
+        for s in self.services.values():
+            s.restore_init()
+        for s in self.services_post.values():
+            s.restore_init()
+        for p in self.num_params.values():
+            p.restore_init()
+
     def e_clear(self):
         return self.evaluator.e_clear()
 

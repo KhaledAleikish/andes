@@ -96,6 +96,13 @@ Time-domain simulation:
   and shared adaptive bust-check into ``check_adaptive_bust()``.
 - Add ``requires_variable_step`` class attribute to integration methods,
   replacing the removed ``adaptive`` flag.
+- Add ``TDS.reinit()`` for fast idempotent reset to the post-init state,
+  enabling RL training loops with ~1ms per reset instead of full reload.
+  Restores DAE state ``(x, y)``, device status ``(u, ue)``, ConstService
+  values, and NumParam values, then re-derives discrete flags and residuals
+  via ``fg_update(init=True)``.  Internally, ``Model.snapshot_init()`` /
+  ``Model.restore_init()`` save and restore model-level mutable state;
+  ``NumParam`` and ``ConstService`` each store a ``_v_t0`` snapshot.
 
 PSS/E parser:
 

@@ -198,6 +198,11 @@ class Fault(ModelData, Model):
                           )
         self._vstore = np.array([])
 
+    def restore_init(self):
+        """Extend parent to also reset pre-fault voltage snapshot."""
+        super().restore_init()
+        self._vstore = np.array([])
+
     def apply_fault(self, is_time: np.ndarray):
         """
         Apply fault and store pre-fault algebraic variables (voltages and other
