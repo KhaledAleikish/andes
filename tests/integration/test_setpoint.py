@@ -5,10 +5,7 @@ Tests for group-level setpoint API:
 - GroupBase.set_setpoint() / get_setpoint()
 """
 
-import logging
 import unittest
-
-import numpy as np
 
 import andes
 from andes.utils.paths import get_case

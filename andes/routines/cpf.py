@@ -585,7 +585,6 @@ class CPF(BaseRoutine):
         z = self._compute_tangent(lam, z)
 
         # previous converged point (for secant orientation)
-        xy_prev = None
         lam_prev = None
 
         for k in range(self.config.max_steps):
@@ -662,7 +661,6 @@ class CPF(BaseRoutine):
             fail_count = 0
 
             # save previous point for secant
-            xy_prev = xy.copy()
             lam_prev = lam
 
             xy = np.concatenate([dae.x[:n].copy(), dae.y[:m].copy()])
