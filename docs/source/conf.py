@@ -51,6 +51,7 @@ nb_execution_timeout = 300            # 5 min timeout per cell
 nb_execution_raise_on_error = True    # Fail build on notebook errors (catch issues in CI)
 nb_execution_excludepatterns = [
     'verification/*',                 # Skip verification notebooks (long-running)
+    'tutorials/15-reinforcement-learning.ipynb',  # Requires gymnasium (rl extra)
 ]
 nb_merge_streams = True               # Merge stdout/stderr into single output
 
