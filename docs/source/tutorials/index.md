@@ -44,4 +44,5 @@ For creating custom device models, see the {doc}`../modeling/index` section afte
 12-state-estimation
 13-continuation-power-flow
 14-inspecting-models
+15-reinforcement-learning
 ```

@@ -103,11 +103,18 @@ Time-domain simulation:
   via ``fg_update(init=True)``.  Internally, ``Model.snapshot_init()`` /
   ``Model.restore_init()`` save and restore model-level mutable state;
   ``NumParam`` and ``ConstService`` each store a ``_v_t0`` snapshot.
+
+Reinforcement learning:
+
 - Add ``andes.rl`` module with ``AndesEnv``, a Gymnasium-compatible environment
-  for reinforcement learning.  Supports configurable observations (with optional
-  device idx selection), group-level and model-level action setpoints, custom
-  reward/disturbance functions, and fast reset via ``TDS.reinit()``.  Install
-  with ``pip install andes[rl]``.
+  for reinforcement learning on power system dynamics.  Supports configurable
+  observations (with optional device ``idx`` selection), group-level and
+  model-level action setpoints, custom reward and disturbance functions, and
+  fast reset via ``TDS.reinit()``.  Install with ``pip install andes[rl]``.
+- Add tutorial notebook (Tutorial 15: Reinforcement Learning) covering
+  environment construction, observation and action specification, reward
+  function design, disturbance injection, policy comparison, and integration
+  with Stable-Baselines3.
 
 PSS/E parser:
 

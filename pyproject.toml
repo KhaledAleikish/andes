@@ -83,8 +83,11 @@ interop = [
 web = [
     "ipywidgets==7.7",
 ]
+rl = [
+    "gymnasium>=1.0",
+]
 all = [
-    "andes[dev,doc,interop,web]",
+    "andes[dev,doc,interop,web,rl]",
 ]
 
 [project.scripts]
