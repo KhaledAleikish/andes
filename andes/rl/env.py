@@ -45,6 +45,9 @@ class AndesEnv(gymnasium.Env):
     disturbance_fn : callable or None
         ``disturbance_fn(env) -> None``, called after each ``reinit``
         in ``reset()`` to inject episode-specific perturbations.
+    crash_penalty : float
+        Reward penalty applied when the simulation terminates due to
+        instability (default ``-100.0``).  Set to ``0.0`` to disable.
     action_low : float or array-like
         Lower bound for the action space (default unbounded).
     action_high : float or array-like
@@ -84,6 +87,7 @@ class AndesEnv(gymnasium.Env):
         dt=0.1,
         tf=20.0,
         disturbance_fn=None,
+        crash_penalty=-100.0,
         action_low=-np.inf,
         action_high=np.inf,
         obs_low=-np.inf,
@@ -127,6 +131,7 @@ class AndesEnv(gymnasium.Env):
         self._tf = float(tf)
         self._reward_fn = reward_fn
         self._disturbance_fn = disturbance_fn
+        self._crash_penalty = float(crash_penalty)
         self._step_count = 0
 
         # --- resolve observations ---
@@ -199,10 +204,12 @@ class AndesEnv(gymnasium.Env):
 
         obs = self._get_obs()
 
-        reward = float(self._reward_fn(obs, action, self))
-
         truncated = (self._tf - float(self._ss.dae.t)) < 0.5 * self._dt
         terminated = (not success) and (not truncated)
+
+        reward = float(self._reward_fn(obs, action, self))
+        if terminated:
+            reward += self._crash_penalty
 
         self._step_count += 1
         info = {'t': float(self._ss.dae.t), 'success': success,
