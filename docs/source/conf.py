@@ -85,7 +85,7 @@ html_theme_options = {
     'icon_links': [
         {
             'name': 'PDF Manual',
-            'url': 'https://docs.andes.app/_/downloads/en/stable/pdf/',
+            'url': f'https://docs.andes.app/_/downloads/en/{os.environ.get("READTHEDOCS_VERSION", "stable")}/pdf/',
             'icon': 'fa-solid fa-file-pdf',
         },
         {
