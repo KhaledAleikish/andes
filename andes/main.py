@@ -30,7 +30,7 @@ from typing import Optional, Union
 
 import andes
 from andes.routines import routine_cli
-from andes.shared import NCPUS_PHYSICAL, Pool, Process, unittest
+from andes.shared import NCPUS, Pool, Process, unittest
 from andes.system import System, fix_view_arrays, import_pycode
 from andes.utils.misc import ColoredFormatter, elapsed, is_interactive, supports_color
 from andes.utils.paths import get_config_path, get_log_dir, tests_root
@@ -529,7 +529,7 @@ def find_log_path(lg):
     return out
 
 
-def _run_mp_proc(cases, ncpu=NCPUS_PHYSICAL, **kwargs):
+def _run_mp_proc(cases, ncpu=NCPUS, **kwargs):
     """
     Run multiprocessing with `Process`.
 
@@ -555,7 +555,7 @@ def _run_mp_proc(cases, ncpu=NCPUS_PHYSICAL, **kwargs):
     return True
 
 
-def _run_mp_pool(cases, ncpu=NCPUS_PHYSICAL, verbose=logging.INFO, **kwargs):
+def _run_mp_pool(cases, ncpu=NCPUS, verbose=logging.INFO, **kwargs):
     """
     Run multiprocessing jobs using Pool.
 
@@ -598,7 +598,7 @@ def run(
     input_path="",
     verbose=20,
     mp_verbose=30,
-    ncpu=NCPUS_PHYSICAL,
+    ncpu=NCPUS,
     pool=False,
     cli=False,
     codegen=False,
@@ -811,7 +811,7 @@ def prepare(
 
     cli = kwargs.get("cli", False)
     full = kwargs.get("full", False)
-    ncpu = kwargs.get("ncpu", NCPUS_PHYSICAL)
+    ncpu = kwargs.get("ncpu", NCPUS)
 
     if cli is True:
         if not full:

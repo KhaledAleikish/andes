@@ -11,7 +11,7 @@ from time import strftime
 
 from andes.main import config_logger, find_log_path
 from andes.routines import routine_cli
-from andes.shared import NCPUS_PHYSICAL
+from andes.shared import NCPUS
 from andes.utils.paths import get_log_dir
 
 logger = logging.getLogger(__name__)
@@ -83,7 +83,7 @@ def create_parser():
         "-n", "--no-output", help="Force no output of any kind", action="store_true"
     )
     run.add_argument(
-        "--ncpu", help="Number of parallel processes", type=int, default=NCPUS_PHYSICAL
+        "--ncpu", help="Number of parallel processes", type=int, default=NCPUS
     )
     run.add_argument(
         "--dime-address",
@@ -332,7 +332,7 @@ def create_parser():
         help="model names to be individually prepared",
     )
     prep.add_argument(
-        "--ncpu", help="Number of parallel processes", type=int, default=NCPUS_PHYSICAL
+        "--ncpu", help="Number of parallel processes", type=int, default=NCPUS
     )
     prep.add_argument(
         "--nomp",

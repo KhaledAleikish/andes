@@ -179,13 +179,13 @@ def is_nbconvert():
         True if running in nbconvert, False otherwise.
     """
     import os
+    import re
 
     try:
-        import psutil
-        parent = psutil.Process(os.getpid()).parent()
-        cmdline = ' '.join(parent.cmdline())
-        if 'nbconvert' in cmdline:
-            return True
+        with open(f'/proc/{os.getppid()}/cmdline') as f:
+            cmdline = f.read()
+            if re.search(r'(?<![_a-zA-Z])nbconvert(?![_a-zA-Z])', cmdline):
+                return True
     except Exception:
         pass
 

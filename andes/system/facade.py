@@ -20,7 +20,7 @@ import andes.io
 from andes.core import AntiWindup, Model, ConnMan
 from andes.core.service import BackRef
 from andes.io.streaming import Streaming
-from andes.shared import NCPUS_PHYSICAL, jac_names, np, spmatrix
+from andes.shared import NCPUS, jac_names, np, spmatrix
 from andes.system.codegen import CodegenManager
 from andes.system.config_runtime import SystemConfigRuntime
 from andes.system.dae_compactor import DAECompactor
@@ -208,7 +208,7 @@ class System:
         self._adders = dict(f=list(), g=list(), x=list(), y=list())
         self._setters = dict(f=list(), g=list(), x=list(), y=list())
 
-    def prepare(self, quick=False, incremental=False, models=None, nomp=False, ncpu=NCPUS_PHYSICAL):
+    def prepare(self, quick=False, incremental=False, models=None, nomp=False, ncpu=NCPUS):
         """
         Delegate to :class:`andes.system.codegen.CodegenManager`.
         """
@@ -604,7 +604,7 @@ class System:
     def precompile(self,
                    models: Union[OrderedDict, None] = None,
                    nomp: bool = False,
-                   ncpu: int = NCPUS_PHYSICAL):
+                   ncpu: int = NCPUS):
         """
         Delegate to :class:`andes.system.codegen.CodegenManager`.
         """

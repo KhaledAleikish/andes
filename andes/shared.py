@@ -11,9 +11,9 @@ This module imports shared libraries either directly or with `LazyImport`.
 #     For example, NumPy must not be imported with LazyImport.
 
 import math
+import os
 
 import numpy as np  # NOQA
-import psutil
 from shutil import which  # NOQA
 from kvxopt import printing  # NOQA
 from kvxopt import (div, klu, matrix, mul, sparse, spdiag, spmatrix,  # NOQA
@@ -27,7 +27,7 @@ printing.options['width'] = -1
 
 
 # --- SYSTEM INFO ---
-NCPUS_PHYSICAL = psutil.cpu_count(logical=False)
+NCPUS = os.cpu_count()
 
 # --- MATH CONSTANTS ---
 deg2rad = math.pi/180

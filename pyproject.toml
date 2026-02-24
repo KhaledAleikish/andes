@@ -36,7 +36,6 @@ dependencies = [
     "ipywidgets",
     "pyyaml",
     "chardet",
-    "psutil",
     "texttable",
 ]
 

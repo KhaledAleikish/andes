@@ -21,7 +21,7 @@ from typing import Union
 
 from andes.core import Model
 from andes.models import file_classes
-from andes.shared import NCPUS_PHYSICAL, Pool, Process, dilled_vars, numba
+from andes.shared import NCPUS, Pool, Process, dilled_vars, numba
 from andes.utils.misc import elapsed
 from andes.utils.paths import andes_root, get_pycode_path
 
@@ -36,7 +36,7 @@ class CodegenManager:
     def __init__(self, system):
         self.system = system
 
-    def prepare(self, quick=False, incremental=False, models=None, nomp=False, ncpu=NCPUS_PHYSICAL):
+    def prepare(self, quick=False, incremental=False, models=None, nomp=False, ncpu=NCPUS):
         """
         Generate numerical functions from symbolically defined models.
 
@@ -232,7 +232,7 @@ class CodegenManager:
     def precompile(self,
                    models: Union[OrderedDict, None] = None,
                    nomp: bool = False,
-                   ncpu: int = NCPUS_PHYSICAL):
+                   ncpu: int = NCPUS):
         """
         Trigger precompilation for the given models.
 
