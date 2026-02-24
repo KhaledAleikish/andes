@@ -3,7 +3,7 @@ Tests for the unified logging system.
 
 Verifies that:
 - TqdmStreamHandler routes through tqdm.write
-- config_logger installs TqdmStreamHandler (or coloredlogs wraps it)
+- config_logger installs TqdmStreamHandler with optional ColoredFormatter
 - set_logger_level updates handler levels
 - Timer event messages (Toggle, Fault, Alter) use logger.info
 - Convergence diagnostics use logger.debug
@@ -14,12 +14,14 @@ Verifies that:
 import io
 import logging
 import logging.handlers
+import os
 import unittest
 
 import numpy as np
 
 import andes
 from andes.main import TqdmStreamHandler, config_logger, set_logger_level
+from andes.utils.misc import ColoredFormatter, supports_color
 from andes.utils.paths import get_case
 
 CASE14 = get_case('ieee14/ieee14_esst3a.xlsx')
@@ -77,22 +79,16 @@ class TestConfigLogger(unittest.TestCase):
               if isinstance(h, logging.StreamHandler)]
         self.assertTrue(len(sh) > 0, "Expected at least one StreamHandler")
 
-    def test_handler_is_tqdm_or_coloredlogs(self):
-        """The stream handler should be TqdmStreamHandler or a coloredlogs
-        wrapper (which inherits from StreamHandler)."""
+    def test_handler_is_tqdm(self):
+        """The stream handler should be TqdmStreamHandler."""
         config_logger(stream=True, file=False)
         sh = [h for h in self._lg.handlers
               if isinstance(h, logging.StreamHandler)
               and not isinstance(h, logging.FileHandler)]
         self.assertTrue(len(sh) > 0)
-        # At least one should be TqdmStreamHandler or the coloredlogs
-        # StandardErrorHandler (which coloredlogs installs in non-interactive)
         h = sh[0]
-        is_tqdm = isinstance(h, TqdmStreamHandler)
-        is_coloredlogs = type(h).__name__ == 'StandardErrorHandler'
-        self.assertTrue(is_tqdm or is_coloredlogs,
-                        f"Expected TqdmStreamHandler or coloredlogs handler, "
-                        f"got {type(h).__name__}")
+        self.assertIsInstance(h, TqdmStreamHandler,
+                              f"Expected TqdmStreamHandler, got {type(h).__name__}")
 
     def test_set_logger_level_updates_stream(self):
         """set_logger_level should change the level on StreamHandlers."""
@@ -331,6 +327,69 @@ class TestNoVerboseGuards(unittest.TestCase):
         source = inspect.getsource(tds)
         self.assertIn("verbose') == 1", source,
                       "The verbose==1 debugger breakpoint should be preserved")
+
+
+# ---------------------------------------------------------------------------
+# supports_color and ColoredFormatter
+# ---------------------------------------------------------------------------
+
+class TestSupportsColor(unittest.TestCase):
+    """Environment-variable and TTY detection for supports_color()."""
+
+    def _clean_env(self):
+        """Remove color env vars so tests are isolated."""
+        for key in ('FORCE_COLOR', 'NO_COLOR', 'TERM'):
+            os.environ.pop(key, None)
+
+    def setUp(self):
+        self._saved = {k: os.environ.get(k) for k in ('FORCE_COLOR', 'NO_COLOR', 'TERM')}
+        self._clean_env()
+
+    def tearDown(self):
+        self._clean_env()
+        for k, v in self._saved.items():
+            if v is not None:
+                os.environ[k] = v
+
+    def test_force_color_overrides(self):
+        os.environ['FORCE_COLOR'] = '1'
+        self.assertTrue(supports_color(stream=io.StringIO()))
+
+    def test_force_color_empty_string(self):
+        os.environ['FORCE_COLOR'] = ''
+        self.assertTrue(supports_color(stream=io.StringIO()))
+
+    def test_no_color_disables(self):
+        os.environ['NO_COLOR'] = ''
+        self.assertFalse(supports_color())
+
+    def test_non_tty_returns_false(self):
+        self.assertFalse(supports_color(stream=io.StringIO()))
+
+    def test_dumb_term_returns_false(self):
+        os.environ['TERM'] = 'dumb'
+        # Need a stream that reports isatty=True
+        tty = io.StringIO()
+        tty.isatty = lambda: True
+        self.assertFalse(supports_color(stream=tty))
+
+
+class TestColoredFormatter(unittest.TestCase):
+    """ColoredFormatter wraps output with ANSI codes."""
+
+    def test_info_is_colored(self):
+        fmt = ColoredFormatter('%(message)s')
+        record = logging.LogRecord('t', logging.INFO, '', 0, 'hello', (), None)
+        result = fmt.format(record)
+        self.assertTrue(result.startswith('\033['))
+        self.assertIn('hello', result)
+        self.assertTrue(result.endswith('\033[0m'))
+
+    def test_original_record_unchanged(self):
+        fmt = ColoredFormatter('%(levelname)s %(message)s')
+        record = logging.LogRecord('t', logging.WARNING, '', 0, 'msg', (), None)
+        fmt.format(record)
+        self.assertEqual(record.levelname, 'WARNING')
 
 
 if __name__ == '__main__':

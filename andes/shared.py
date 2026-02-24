@@ -12,7 +12,6 @@ This module imports shared libraries either directly or with `LazyImport`.
 
 import math
 
-import coloredlogs  # NOQA
 import numpy as np  # NOQA
 import psutil
 from shutil import which  # NOQA

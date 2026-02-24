@@ -30,9 +30,9 @@ from typing import Optional, Union
 
 import andes
 from andes.routines import routine_cli
-from andes.shared import NCPUS_PHYSICAL, Pool, Process, coloredlogs, unittest
+from andes.shared import NCPUS_PHYSICAL, Pool, Process, unittest
 from andes.system import System, fix_view_arrays, import_pycode
-from andes.utils.misc import elapsed, is_interactive
+from andes.utils.misc import ColoredFormatter, elapsed, is_interactive, supports_color
 from andes.utils.paths import get_config_path, get_log_dir, tests_root
 
 logger = logging.getLogger(__name__)
@@ -121,14 +121,10 @@ def config_logger(
         set_logger_level(logger, logging.StreamHandler, stream_level)
         set_logger_level(logger, logging.FileHandler, file_level)
 
-    if not is_interactive():
-        # Use our TqdmStreamHandler so coloredlogs doesn't install its own
-        sh_handlers = [h for h in lg.handlers if isinstance(h, TqdmStreamHandler)]
-        if sh_handlers:
-            coloredlogs.install(logger=lg, level=stream_level,
-                                fmt=sh_formatter_str, handlers=sh_handlers)
-        else:
-            coloredlogs.install(logger=lg, level=stream_level, fmt=sh_formatter_str)
+    if not is_interactive() and supports_color():
+        for h in lg.handlers:
+            if isinstance(h, TqdmStreamHandler):
+                h.setFormatter(ColoredFormatter(sh_formatter_str))
 
 
 def edit_conf(edit_config: Optional[Union[str, bool]] = ""):

@@ -35,7 +35,6 @@ dependencies = [
     "tqdm",
     "ipywidgets",
     "pyyaml",
-    "coloredlogs",
     "chardet",
     "psutil",
     "texttable",

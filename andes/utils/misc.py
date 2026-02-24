@@ -1,4 +1,6 @@
 import logging
+import os
+import platform
 import sys
 from time import time
 
@@ -94,6 +96,57 @@ def is_interactive():
     import __main__ as main
 
     return not hasattr(main, '__file__') or ipython
+
+
+def supports_color(stream=None):
+    """Check whether the given stream (default stderr) supports ANSI colors.
+
+    Respects the ``NO_COLOR`` environment variable (https://no-color.org)
+    and the ``FORCE_COLOR`` override used by many CLI tools.
+    """
+    if os.environ.get('FORCE_COLOR') is not None:
+        return True
+    if os.environ.get('NO_COLOR') is not None:
+        return False
+
+    if stream is None:
+        stream = sys.stderr
+    if not hasattr(stream, 'isatty') or not stream.isatty():
+        return False
+
+    if platform.system() == 'Windows':
+        # Windows 10 build 10586+ supports ANSI natively in conhost/WT
+        try:
+            win_build = sys.getwindowsversion().build
+        except AttributeError:
+            win_build = 0
+        return (os.environ.get('ANSICON')
+                or os.environ.get('WT_SESSION')
+                or 'TERM_PROGRAM' in os.environ
+                or win_build >= 10586)
+
+    # Unix: only the 'dumb' terminal lacks color support
+    return os.environ.get('TERM') != 'dumb'
+
+
+class ColoredFormatter(logging.Formatter):
+    """Logging formatter that adds ANSI color codes to log output."""
+
+    COLORS = {
+        'DEBUG':    '\033[36m',     # cyan
+        'INFO':     '\033[32m',     # green
+        'WARNING':  '\033[33m',     # yellow
+        'ERROR':    '\033[31m',     # red
+        'CRITICAL': '\033[1;31m',   # bold red
+    }
+    RESET = '\033[0m'
+
+    def format(self, record):
+        result = super().format(record)
+        color = self.COLORS.get(record.levelname, '')
+        if color:
+            result = f"{color}{result}{self.RESET}"
+        return result
 
 
 def is_tty():
