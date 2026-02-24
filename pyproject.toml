@@ -39,7 +39,6 @@ dependencies = [
     "chardet",
     "psutil",
     "texttable",
-    "numba",
 ]
 
 [project.optional-dependencies]
@@ -86,8 +85,11 @@ web = [
 rl = [
     "gymnasium>=1.0",
 ]
+performance = [
+    "numba",
+]
 all = [
-    "andes[dev,doc,interop,web,rl]",
+    "andes[dev,doc,interop,web,rl,performance]",
 ]
 
 [project.scripts]

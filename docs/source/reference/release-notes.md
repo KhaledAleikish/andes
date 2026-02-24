@@ -193,6 +193,13 @@ API improvements:
   tooltips, horizontal/vertical reference lines, figure reuse, and HTML
   export. LaTeX legend labels are automatically replaced with plain text.
 
+Packaging:
+
+- Make ``numba`` an optional dependency. Install with ``pip install andes[performance]``
+  to enable Numba JIT compilation. ANDES runs without numba by default
+  (``runtime.numba = 0``); if numba is enabled but not installed, a warning is
+  logged and execution continues without JIT.
+
 Upgrade guide — ``set()`` / ``alter()`` consolidation:
 
 - **``alter()`` → ``set()`` with ``base='device'``**: ``alter()`` accepted
