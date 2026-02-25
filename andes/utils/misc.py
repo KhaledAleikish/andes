@@ -162,7 +162,7 @@ def is_tty():
     bool
         True if stdout is a TTY, False otherwise.
     """
-    return sys.stdout.isatty()
+    return hasattr(sys.stdout, 'isatty') and sys.stdout.isatty()
 
 
 def is_nbconvert():
