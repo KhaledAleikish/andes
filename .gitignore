@@ -60,6 +60,7 @@ coverage.xml
 *.log
 
 # Sphinx documentation
+iframe_figures/
 docs/source/modelref.rst
 docs/source/configref.rst
 docs/source/groupdoc

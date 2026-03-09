@@ -30,7 +30,6 @@ extensions = [
     'sphinx.ext.viewcode',
     'sphinx_design',              # Modern cards, tabs, grids
     'sphinx_copybutton',          # Copy button for code blocks
-    'sphinx_selective_exclude.eager_only',  # Process {only} during parsing
     'numpydoc',
 ]
 

@@ -39,5 +39,5 @@ For creating custom device models, see the {doc}`../modeling/index` section afte
 09-contingency-analysis
 10-dynamic-control
 11-frequency-response
-inspecting-models
+14-inspecting-models
 ```

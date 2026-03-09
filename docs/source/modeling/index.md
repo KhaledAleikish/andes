@@ -12,7 +12,7 @@ This section is for developers who want to:
 
 For users who want to:
 - Run simulations: see the {doc}`../tutorials/index` section
-- Inspect model equations: see the {doc}`../tutorials/inspecting-models` tutorial
+- Inspect model equations: see the {doc}`../tutorials/14-inspecting-models` tutorial
 ````
 
 ```{toctree}

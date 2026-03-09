@@ -12,7 +12,7 @@ The APIs before v3.0.0 are in beta and may change without prior notice.
 
 ## v1.10 Notes
 
-### v1.10.1 (2026-02-04)
+### v1.10.1 (2026-03-09)
 
 - Fix `zero_out` bypass in `LeadLag` and `LeadLag2ndOrd` blocks. `LeadLag` now checks
   only `T2` (not both `T1` and `T2`) to activate bypass. `LeadLag2ndOrd` also checks
