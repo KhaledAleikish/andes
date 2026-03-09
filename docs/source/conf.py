@@ -55,6 +55,7 @@ nb_execution_excludepatterns = [
     'gallery/forced-oscillation.ipynb',             # WECC 179-bus multi-stage TDS (long-running)
     'gallery/low-inertia-freq.ipynb',              # WECC 179-bus 4 scenarios (long-running)
     'gallery/critical-clearing-time.ipynb',        # 300 TDS scenarios via reinit (long-running)
+    'gallery/smib-oscillation.ipynb',               # RL training requires stable-baselines3 (~2 min)
 ]
 nb_merge_streams = True               # Merge stdout/stderr into single output
 

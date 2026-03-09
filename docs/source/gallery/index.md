@@ -6,17 +6,16 @@ Each example is a self-contained notebook that you can download and extend for y
 ::::{grid} 1 2 2 2
 :gutter: 3
 
-:::{grid-item-card} Forced Oscillation Source Localization
-:link: forced-oscillation
+:::{grid-item-card} Critical Clearing Time Mapping
+:link: critical-clearing-time
 :link-type: doc
-:img-top: images/forced-oscillation.png
+:img-top: images/critical-clearing-time.png
 
-Inject a periodic governor disturbance on the WECC 179-bus system with 29 generators.
-Locate the source using PMU-observable energy flow and phase analysis, even when
-resonance causes non-source generators to oscillate more.
+Sweep fault durations across all buses in the Kundur two-area system
+and map the transient stability boundary as a heatmap.
 
 +++
-WECC 179-bus | PFlow, TDS, FFT
+Kundur 2-area | PFlow, TDS, reinit
 :::
 
 :::{grid-item-card} Low-Inertia Frequency Stability
@@ -24,25 +23,35 @@ WECC 179-bus | PFlow, TDS, FFT
 :link-type: doc
 :img-top: images/low-inertia-freq.png
 
-Scale generator inertia on the IEEE 14-bus system to emulate increasing renewable
-penetration. Trip a generator and quantify how RoCoF and frequency nadir degrade as
-inertia decreases.
+Scale generator inertia to emulate rising renewable penetration on
+the IEEE 14-bus system. Quantify how RoCoF and frequency nadir degrade.
 
 +++
 IEEE 14-bus | PFlow, TDS
 :::
 
-:::{grid-item-card} Critical Clearing Time Mapping
-:link: critical-clearing-time
+:::{grid-item-card} Forced Oscillation Source Localization
+:link: forced-oscillation
 :link-type: doc
-:img-top: images/critical-clearing-time.png
+:img-top: images/forced-oscillation.png
 
-Sweep fault clearing times across all buses in the Kundur two-area system to map the
-transient stability boundary. Visualize CCT as a heatmap of rotor angle separation
-and identify the most vulnerable buses.
+Inject a periodic governor disturbance on the WECC 179-bus system
+and locate the source using energy flow and phase analysis from PMU data.
 
 +++
-Kundur 2-area | PFlow, TDS, reinit
+WECC 179-bus | PFlow, TDS, FFT
+:::
+
+:::{grid-item-card} RL Oscillation Damping on SMIB
+:link: smib-oscillation
+:link-type: doc
+:img-top: images/smib-oscillation.png
+
+Train a PPO agent to damp post-fault rotor oscillations using the
+Gymnasium-compatible AndesEnv. Zero domain knowledge, pure simulation experience.
+
++++
+SMIB | PFlow, TDS, AndesEnv, PPO
 :::
 
 ::::
@@ -66,4 +75,5 @@ Each notebook is designed as a **template**: after following the walkthrough, lo
 forced-oscillation
 low-inertia-freq
 critical-clearing-time
+smib-oscillation
 ```
