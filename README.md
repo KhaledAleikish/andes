@@ -4,7 +4,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/andes.svg)](https://pypi.python.org/pypi/andes)
 [![Conda](https://anaconda.org/conda-forge/andes/badges/downloads.svg)](https://anaconda.org/conda-forge/andes)
-[![Documentation](https://readthedocs.org/projects/andes/badge/?version=latest)](https://andes.readthedocs.io/en/latest/)
+[![Documentation](https://readthedocs.org/projects/andes/badge/?version=latest)](https://docs.andes.app/en/latest/)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
 ANDES is an open-source Python package for power system modeling and
@@ -77,7 +77,7 @@ ESST3A, ESDC2A, IEEEST, ST2CUT) shows close agreement across all three tools.
 | ![NPCC](docs/source/images/example-npcc/omega.png) | ![WECC](docs/source/images/example-wecc/omega.png) |
 
 Full verification notebooks with side-by-side comparisons are available in the
-[documentation](https://andes.readthedocs.io/en/latest/verification/index.html).
+[documentation](https://docs.andes.app/en/latest/verification/index.html).
 
 ## Symbolic Modeling Framework
 
@@ -127,11 +127,11 @@ The documentation includes worked examples covering:
 - and others ...
 
 Browse the full gallery at
-[andes.readthedocs.io](https://andes.readthedocs.io/en/latest/gallery/index.html).
+[docs.andes.app](https://docs.andes.app/en/latest/gallery/index.html).
 
 ## Resources
 
-- [Documentation](https://andes.readthedocs.io) with step-by-step tutorials,
+- [Documentation](https://docs.andes.app) with step-by-step tutorials,
   a modeling guide, and API reference
 - [GitHub Discussions](https://github.com/CURENT/andes/discussions) for questions
 - [Issue Tracker](https://github.com/CURENT/andes/issues) for bug reports
