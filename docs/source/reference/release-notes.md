@@ -12,7 +12,7 @@ The APIs before v3.0.0 are in beta and may change without prior notice.
 
 ## v2.0 Notes
 
-### v2.0.0 (In development)
+### v2.0.0 (2026-03-11)
 
 Modeling framework changes:
 
