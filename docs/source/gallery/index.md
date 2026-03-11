@@ -3,7 +3,7 @@
 Application examples showcasing ANDES for power system research.
 Each example is a self-contained notebook that you can download and extend for your own studies.
 
-::::{grid} 1 2 2 2
+::::{grid} 1 2 3 3
 :gutter: 3
 
 :::{grid-item-card} Critical Clearing Time Mapping
@@ -42,6 +42,18 @@ and locate the source using energy flow and phase analysis from PMU data.
 WECC 179-bus | PFlow, TDS, FFT
 :::
 
+:::{grid-item-card} Physics-Informed Surrogate (PINN)
+:link: pinn-surrogate
+:link-type: doc
+:img-top: images/pinn-surrogate.png
+
+Extract symbolic DAE equations from ANDES, eliminate algebraic variables,
+and train a parameterized PINN surrogate. No hand-coded physics in PyTorch.
+
++++
+SMIB | SymPy, PyTorch, PINN
+:::
+
 :::{grid-item-card} RL Oscillation Damping on SMIB
 :link: smib-oscillation
 :link-type: doc
@@ -72,8 +84,9 @@ Each notebook is designed as a **template**: after following the walkthrough, lo
 :maxdepth: 1
 :hidden:
 
-forced-oscillation
-low-inertia-freq
 critical-clearing-time
+low-inertia-freq
+forced-oscillation
+pinn-surrogate
 smib-oscillation
 ```
