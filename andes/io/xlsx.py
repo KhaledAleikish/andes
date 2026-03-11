@@ -45,6 +45,7 @@ def write(system, outfile, skip_empty=True, overwrite=None, add_book=None, **kwa
         return False
 
     writer = pd.ExcelWriter(outfile, engine='xlsxwriter')
+    writer = _write_config(system, writer)
     writer = _write_system(system, writer, skip_empty)
     writer = _add_book(system, writer, add_book)
 
@@ -54,6 +55,19 @@ def write(system, outfile, skip_empty=True, overwrite=None, add_book=None, **kwa
     return True
 
 
+def _write_config(system, writer):
+    """
+    Write the ``_config`` sheet with all active configuration values.
+
+    Each row has columns: ``section``, ``key``, ``value``.
+    """
+    rows = system.config_runtime.collect_config_rows()
+    if rows:
+        df = pd.DataFrame(rows, columns=['section', 'key', 'value'])
+        df.to_excel(writer, sheet_name='_config', index=False, freeze_panes=(1, 0))
+    return writer
+
+
 def _write_system(system, writer, skip_empty):
     """
     Write the system to pandas ExcelWriter
@@ -61,8 +75,7 @@ def _write_system(system, writer, skip_empty):
     for name, instance in system.models.items():
         if skip_empty and instance.n == 0:
             continue
-        instance.cache.refresh("df_in")
-        instance.cache.df_in.to_excel(writer, sheet_name=name, freeze_panes=(1, 0))
+        instance.as_df(vin=True).to_excel(writer, sheet_name=name, freeze_panes=(1, 0))
     return writer
 
 
@@ -78,7 +91,7 @@ def _add_book(system, writer, add_book):
 
         for item in add_book:
             if item in system.models:
-                system.models[item].cache.df_in.to_excel(writer, sheet_name=item, freeze_panes=(1, 0))
+                system.models[item].as_df(vin=True).to_excel(writer, sheet_name=item, freeze_panes=(1, 0))
                 logger.info('<%s> template sheet added.', item)
             else:
                 logger.error('<%s> is not a valid model name.', item)
@@ -108,6 +121,9 @@ def read(system, infile):
                               )
 
     for name, df in df_models.items():
+        if name == '_config':
+            continue
+
         # drop rows that all nan
         df.dropna(axis=0, how='all', inplace=True)
         for row in df.to_dict(orient='records'):

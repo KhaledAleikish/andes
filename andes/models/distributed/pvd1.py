@@ -20,13 +20,16 @@ class PVD1Data(ModelData):
     def __init__(self):
         ModelData.__init__(self)
 
-        self.bus = IdxParam(model='Bus',
+        self.bus = IdxParam(model='ACNode',
                             info="interface bus id",
                             mandatory=True,
+                            status_parent=True,
                             )
 
         self.gen = IdxParam(info="static generator index",
+                            model='StaticGen',
                             mandatory=True,
+                            replaces=True,
                             )
 
         self.Sn = NumParam(default=100.0, tex_name='S_n',
@@ -209,6 +212,8 @@ class PVD1Model(Model):
     Model implementation of PVD1.
     """
 
+    _setpoints = {'pref': 'pref0', 'qref': 'qref0', 'paux': 'Pext0'}
+
     def __init__(self, system, config):
         Model.__init__(self, system, config)
         self.flags.tds = True
@@ -247,7 +252,7 @@ class PVD1Model(Model):
         self.a = ExtAlgeb(model='Bus', src='a', indexer=self.buss, tex_name=r'\theta',
                           info='bus (or igreg) phase angle',
                           unit='rad.',
-                          e_str='-Ipout_y * v * u',
+                          e_str='-Ipout_y * v * ue',
                           ename='P',
                           tex_ename='P',
                           )
@@ -255,7 +260,7 @@ class PVD1Model(Model):
         self.v = ExtAlgeb(model='Bus', src='v', indexer=self.buss, tex_name='V',
                           info='bus (or igreg) terminal voltage',
                           unit='p.u.',
-                          e_str='-Iqout_y * v * u',
+                          e_str='-Iqout_y * v * ue',
                           ename='Q',
                           tex_ename='Q',
                           )
@@ -375,19 +380,19 @@ class PVD1Model(Model):
         self.Pext = Algeb(tex_name='P_{ext}',
                           info='External power signal (for AGC)',
                           v_str='u * Pext0',
-                          e_str='u * Pext0 - Pext'
+                          e_str='ue * Pext0 - Pext'
                           )
 
         self.Pref = Algeb(tex_name='P_{ref}',
                           info='Reference power signal (for scheduling setpoint)',
                           v_str='u * pref0',
-                          e_str='u * pref0 - Pref'
+                          e_str='ue * pref0 - Pref'
                           )
 
         self.Psum = Algeb(tex_name='P_{tot}',
                           info='Sum of P signals',
                           v_str='u * (Pext + Pref + DB_y)',
-                          e_str='u * (Pext + Pref + DB_y) - Psum',
+                          e_str='ue * (Pext + Pref + DB_y) - Psum',
                           )  # `DB_y` is `Pdrp` (f droop)
 
         self.PHL = Limiter(u=self.Psum, lower=0.0, upper=self.pmx,
@@ -423,9 +428,9 @@ class PVD1Model(Model):
                            allow_adjust=False,
                            )
 
-        Qdrp = 'u * VQ1_zl * qmx + VQ2_zu * qmn + ' \
-               'u * VQ1_zi * (qmx + dqdv *(Vqu - Vcomp)) + ' \
-               'u * VQ2_zi * (dqdv * (v1 - Vcomp)) '
+        Qdrp = 'ue * VQ1_zl * qmx + VQ2_zu * qmn + ' \
+               'ue * VQ1_zi * (qmx + dqdv *(Vqu - Vcomp)) + ' \
+               'ue * VQ2_zi * (dqdv * (v1 - Vcomp)) '
 
         self.Qdrp = Algeb(tex_name='Q_{drp}',
                           info='External power signal (for AGC)',
@@ -437,13 +442,13 @@ class PVD1Model(Model):
         self.Qref = Algeb(tex_name=r'Q_{ref}',
                           info='Reference power signal (for scheduling setpoint)',
                           v_str='u * qref0',
-                          e_str='u * qref0 - Qref'
+                          e_str='ue * qref0 - Qref'
                           )
 
         self.Qsum = Algeb(tex_name=r'Q_{tot}',
                           info='Sum of Q signals',
                           v_str=f'u * (qref0 + {Qdrp})',
-                          e_str='u * (Qref + Qdrp) - Qsum',
+                          e_str='ue * (Qref + Qdrp) - Qsum',
                           discrete=(self.VQ1, self.VQ2),
                           )
 
@@ -511,12 +516,6 @@ class PVD1Model(Model):
                          info='Output Iq filter',
                          )
 
-    def v_numeric(self, **kwargs):
-        """
-        Disable the corresponding `StaticGen`s.
-        """
-        self.system.groups['StaticGen'].set(src='u', idx=self.gen.v, attr='v', value=0)
-
 
 class PVD1(PVD1Data, PVD1Model):
     """
@@ -536,10 +535,17 @@ class PVD1(PVD1Data, PVD1Model):
 
     Frequency and voltage recovery latching is yet to be implemented.
 
-    Modifications to the active and reactive power references,
-    typically by an external scheduling program, should
-    write to `pref0.v` and `qref0.v` in place.
-    AGC signals should write to `pext0.v` in place.
+    The recommended approach for modifying setpoints is the group-level API,
+    which works uniformly across all DG models:
+
+    .. code:: python
+
+        ss.DG.set_pref(ss, dev_idx, value)    # writes to pref0
+        ss.DG.set_qref(ss, dev_idx, value)    # writes to qref0
+        ss.DG.set_paux(ss, dev_idx, value)    # writes to Pext0 (AGC signal)
+
+    For advanced usage, direct in-place array assignment is also supported
+    (e.g., ``ss.PVD1.pref0.v[:] = new_values``).
 
     Maximum power limit `pmx` can be disabled by editing the configuration
     file by setting `plim=0`. It cannot be modified in runtime.

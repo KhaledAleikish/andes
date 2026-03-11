@@ -11,10 +11,9 @@ This module imports shared libraries either directly or with `LazyImport`.
 #     For example, NumPy must not be imported with LazyImport.
 
 import math
+import os
 
-import coloredlogs  # NOQA
 import numpy as np  # NOQA
-import psutil
 from shutil import which  # NOQA
 from kvxopt import printing  # NOQA
 from kvxopt import (div, klu, matrix, mul, sparse, spdiag, spmatrix,  # NOQA
@@ -28,7 +27,7 @@ printing.options['width'] = -1
 
 
 # --- SYSTEM INFO ---
-NCPUS_PHYSICAL = psutil.cpu_count(logical=False)
+NCPUS = os.cpu_count()
 
 # --- MATH CONSTANTS ---
 deg2rad = math.pi/180
@@ -41,7 +40,7 @@ isqrt3 = math.sqrt(1/3)
 jac_names = ('fx', 'fy', 'gx', 'gy')
 jac_types = ('c', '')
 
-dilled_vars = ['f_args', 'g_args', 'j_args', 's_args', 'sns_args',
+dilled_vars = ['f_args', 'g_args', 'b_args', 'j_args', 's_args', 'sns_args',
                'ia_args', 'ii_args', 'ij_args',
                'ijac', 'jjac', 'vjac',
                'j_names', 'init_seq', "need_diag_eps"]

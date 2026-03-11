@@ -67,6 +67,12 @@ andes run case.xlsx -r tds -O TDS.tf=30 -O TDS.tstep=0.01
 # Add dynamic data file
 andes run case.raw --addfile case.dyr
 
+# Multiple additional files
+andes run case.raw -a models1.dyr -a models2.dyr
+
+# Cross-format: RAW base with XLSX dynamics
+andes run case.raw -a dynamics.xlsx
+
 # Convert to XLSX format
 andes run case.raw --convert
 
@@ -115,7 +121,7 @@ Out[1]: array([1.0, 1.0, 1.0, 1.0])
 | `-r ROUTINE` | Routine to run (pflow, tds, eig) |
 | `--tf TF` | Simulation end time [s] |
 | `--tstep STEP` | Time step [s] |
-| `--addfile FILE` | Additional file (e.g., DYR) |
+| `-a, --addfile FILE` | Additional file(s); repeatable (e.g., `-a f1.dyr -a f2.xlsx`) |
 | `-O KEY=VALUE` | Configuration option |
 | `-o PATH` | Output directory |
 | `-n, --no-output` | Disable file output |

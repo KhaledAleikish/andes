@@ -12,7 +12,7 @@ from scipy.linalg import solve
 
 from andes.io.txt import dump_data
 from andes.plot import set_latex, set_style
-from andes.routines.base import BaseRoutine, check_conn_before_init
+from andes.routines.base import BaseRoutine
 from andes.shared import div, matrix, plt, sparse, spdiag, spmatrix
 from andes.utils.misc import elapsed
 from andes.variables.report import report_info
@@ -172,14 +172,11 @@ class EIG(BaseRoutine):
             Time constants for non-zero-Tf states only.
         """
         n = fx.size[0]
-        m = gy.size[0]
         zs = self.zstate_idx
-        nz = len(zs)
 
         nz_mask = np.ones(n, dtype=bool)
         nz_mask[zs] = False
         nz_idx = np.where(nz_mask)[0]
-        n_nz = len(nz_idx)
 
         # Selection matrices for non-zero-Tf states (rows/cols of fx)
         Sx, Sx_T = self._selection_matrices(list(nz_idx), n)
@@ -276,6 +273,13 @@ class EIG(BaseRoutine):
         #   left eigenvector is `inv(N)^T`
 
         Weye = np.eye(n_state)
+
+        n_zero = np.count_nonzero(np.abs(mu) < self.config.tol)
+        if n_zero > 0:
+            logger.debug("Eigenvector matrix has %d zero-eigenvalue modes "
+                         "(e.g. PLL angles, integrators); participation "
+                         "factors for these modes may be inaccurate.", n_zero)
+
         WT = solve(N, Weye, overwrite_b=True)
         W = WT.T
 
@@ -316,7 +320,6 @@ class EIG(BaseRoutine):
             self.zstate_idx = np.where(system.dae.Tf == 0)[0]
             logger.debug("%d states are associated with zero time constants.", len(self.zstate_idx))
             logger.debug([system.dae.x_name[i] for i in self.zstate_idx])
-
 
     @staticmethod
     def _sparse_row_norms(mat):
@@ -784,7 +787,6 @@ class EIG(BaseRoutine):
 
         return status
 
-    @check_conn_before_init
     def run(self, **kwargs):
         """
         Run small-signal stability analysis.

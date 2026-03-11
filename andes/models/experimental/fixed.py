@@ -9,12 +9,15 @@ class FixedGenData(ModelData):
     def __init__(self):
         ModelData.__init__(self)
 
-        self.bus = IdxParam(model='Bus',
+        self.bus = IdxParam(model='ACNode',
                             info="interface bus id",
                             mandatory=True,
+                            status_parent=True,
                             )
         self.gen = IdxParam(info="static generator index",
+                            model='StaticGen',
                             mandatory=True,
+                            replaces=True,
                             )
 
 
@@ -55,12 +58,6 @@ class FixedGenModel(Model):
                              indexer=self.gen,
                              tex_name='Q_0',
                              )
-
-    def v_numeric(self, **kwargs):
-        """
-        Disable the corresponding `StaticGen`s.
-        """
-        self.system.groups['StaticGen'].set(src='u', idx=self.gen.v, attr='v', value=0)
 
 
 class FixedGen(FixedGenData, FixedGenModel):

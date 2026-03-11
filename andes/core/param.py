@@ -252,23 +252,43 @@ class DataParam(BaseParam):
 
 class IdxParam(BaseParam):
     """
-    An alias of `BaseParam` with an additional storage of the owner model name
+    Parameter for storing idx references into other models.
 
-    This class is intended for storing `idx` into other models.
-    It can be used in the future for data consistency check.
+    ``IdxParam`` creates the connection graph between models.  It stores
+    device idx values that point to entries in the referenced ``model``
+    (which can be a Model or Group name).  These references are used by
+    ``ExtParam`` and ``ExtAlgeb``/``ExtState`` to look up external values.
+
+    Parameters
+    ----------
+    model : str, optional
+        Name of the referenced Model or Group (e.g. ``'Bus'``,
+        ``'StaticGen'``).  Required for BackRef and external-variable
+        linking.
+    unique : bool, optional
+        If ``True``, duplicate values raise ``IndexError``.  Useful when
+        a one-to-one mapping is required (e.g. one TG per generator).
+    replaces : bool, optional
+        If ``True``, this model replaces the referenced device during
+        time-domain simulation (static-dynamic replacement).
+    status_parent : bool, optional
+        If ``True``, the referenced device is treated as a status parent.
+        When the parent is taken offline via ``set_status``, the effective
+        status ``ue`` of this device and its descendants is propagated
+        automatically.
 
     Examples
     --------
-    A PQ model connected to Bus model will have the following code ::
+    A PQ model connected to Bus ::
 
         class PQModel(...):
             def __init__(...):
-                ...
                 self.bus = IdxParam(model='Bus')
 
-    Notes
-    -----
-    This will be useful when, for example, one connects two TGs to one SynGen.
+    An exciter referencing its parent generator with status propagation ::
+
+        self.syn = IdxParam(model='SynGen', mandatory=True,
+                            status_parent=True)
     """
     def __init__(self,
                  default: Optional[Union[float, str, int]] = None,
@@ -282,6 +302,8 @@ class IdxParam(BaseParam):
                  model: Optional[str] = None,
                  iconvert: Optional[Callable] = None,
                  oconvert: Optional[Callable] = None,
+                 replaces: bool = False,
+                 status_parent: bool = False,
                  ):
         super().__init__(default=default, name=name, tex_name=tex_name,
                          info=info, unit=unit, mandatory=mandatory,
@@ -289,6 +311,8 @@ class IdxParam(BaseParam):
                          )
         self.property['unique'] = unique
         self.model = model  # must be a `Model` name for building BackRef - Not checked yet
+        self.replaces = replaces  # True if this model replaces the referenced device
+        self.status_parent = status_parent  # True if parent's status determines this device's effective status
 
     def add(self, value=None):
         if self.get_property('unique'):
@@ -384,6 +408,14 @@ class NumParam(BaseParam):
         True if the parameter is a DC voltage pu quantity under
         device base.
 
+    Attributes
+    ----------
+    vin : np.ndarray or None
+        Raw input values before per-unit conversion.  Used by
+        :meth:`restore` (pre-pu restore for ``System.reset``).
+    _v_t0 : np.ndarray or None
+        Post-pu ``v`` at t=0, saved by :meth:`snapshot_init`.  Used by
+        :meth:`restore_init` to reset ``v`` during ``TDS.reinit``.
     """
 
     def __init__(self,
@@ -433,6 +465,7 @@ class NumParam(BaseParam):
 
         self.pu_coeff = np.ndarray([])
         self.vin = None  # values from input
+        self._v_t0 = None  # post-pu v at t=0, saved by snapshot_init()
         self.vrange = vrange
         self.vtype = vtype
 
@@ -546,6 +579,30 @@ class NumParam(BaseParam):
         `pu_coeff` will not be overwritten.
         """
         self.v[:] = self.vin
+
+    def snapshot_init(self):
+        """
+        Save the current post-pu ``v`` into ``_v_t0`` for :meth:`restore_init`.
+
+        Unlike :meth:`restore` which copies pre-pu ``vin`` back to ``v``,
+        this saves the fully converted (post-pu) values so that
+        ``restore_init`` can reset ``v`` without re-running pu conversion.
+
+        Called by ``Model.snapshot_init`` at the end of ``TDS.init()``.
+        """
+        self._v_t0 = self.v.copy()
+
+    def restore_init(self):
+        """
+        Restore ``v`` from ``_v_t0`` saved by :meth:`snapshot_init`.
+
+        This restores post-pu values directly.  Contrast with :meth:`restore`,
+        which copies pre-pu ``vin`` into ``v``.
+
+        Called by ``Model.restore_init`` during ``TDS.reinit()``.
+        """
+        if self._v_t0 is not None:
+            self.v[:] = self._v_t0
 
 
 class TimerParam(NumParam):
@@ -731,9 +788,7 @@ class ExtParam(NumParam):
             try:
                 self.vin = parent_instance.vin[uid]
                 self.pu_coeff = parent_instance.pu_coeff[uid]
-            except KeyError:
-                pass
-            except AttributeError:
+            except (KeyError, AttributeError, TypeError):
                 pass
 
     def to_array(self):

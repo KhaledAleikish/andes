@@ -6,7 +6,7 @@ import logging
 from collections import OrderedDict
 
 from andes.utils.misc import elapsed
-from andes.routines.base import BaseRoutine, check_conn_before_init
+from andes.routines.base import BaseRoutine
 from andes.variables.report import Report
 from andes.shared import np, matrix, sparse, newton_krylov
 
@@ -26,31 +26,31 @@ class PFlow(BaseRoutine):
         self.config.add(OrderedDict((('tol', 1e-6),
                                      ('max_iter', 25),
                                      ('method', 'NR'),
-                                     ('check_conn', 1),
                                      ('n_factorize', 4),
                                      ('report', 1),
                                      ('degree', 0),
                                      ('init_tds', 0),
+                                     ('linesearch', 1),
                                      )))
         self.config.add_extra("_help",
                               tol="convergence tolerance",
                               max_iter="max. number of iterations",
                               method="calculation method",
-                              check_conn='check connectivity before power flow',
                               n_factorize="first N iterations to factorize Jacobian in dishonest method",
                               report="write output report",
                               degree='use degree in report',
                               init_tds="initialize TDS after PFlow",
+                              linesearch="backtracking line search for NR",
                               )
         self.config.add_extra("_alt",
                               tol="float",
                               method=("NR", "dishonest", "NK"),
-                              check_conn=(0, 1),
                               max_iter=">=10",
                               n_factorize=">0",
                               report=(0, 1),
                               degree=(0, 1),
                               init_tds=(0, 1),
+                              linesearch=(0, 1),
                               )
 
         self.converged = False
@@ -63,7 +63,6 @@ class PFlow(BaseRoutine):
         self.x_sol = None
         self.y_sol = None
 
-    @check_conn_before_init
     def init(self):
         """
         Initialize variables for power flow.
@@ -93,7 +92,7 @@ class PFlow(BaseRoutine):
         logger.info('Power flow initialized in %s.', s1)
 
         # force compile if numba is on - improves timing accuracy
-        if system.config.numba:
+        if system.runtime.numba:
             t0, _ = elapsed()
 
             system.f_update(self.models)
@@ -140,8 +139,19 @@ class PFlow(BaseRoutine):
         system.dae.x += np.ravel(self.inc[:system.dae.n])
         system.dae.y += np.ravel(self.inc[system.dae.n:])
 
-        # find out variables associated with maximum mismatches
+        mis = self._max_mis()
+        system.vars_to_models()
+
+        return mis
+
+    def _max_mis(self):
+        """
+        Compute max absolute mismatch from current dae.f and dae.g.
+        """
+
+        system = self.system
         fmax = 0
+
         if system.dae.n > 0:
             fmax_idx = np.argmax(np.abs(system.dae.f))
             fmax = system.dae.f[fmax_idx]
@@ -151,30 +161,43 @@ class PFlow(BaseRoutine):
         gmax = system.dae.g[gmax_idx]
         logger.debug("Max. algeb mismatch %.10g on %s", gmax, system.dae.y_name[gmax_idx])
 
-        mis = max(abs(fmax), abs(gmax))
-        system.vars_to_models()
-
-        return mis
+        return max(abs(fmax), abs(gmax))
 
     def nr_solve(self):
         """
-        Solve the power flow problem using itertive Newton's method.
+        Solve the power flow problem using Newton-Raphson iteration.
+
+        When ``config.linesearch`` is enabled, applies nonmonotone backtracking
+        line search (Grippo-Lampariello-Lucidi).  The loop is structured so that
+        the trial-point evaluation at the end of iteration *k* doubles as the
+        initial evaluation for iteration *k+1*, making the line search zero-cost
+        when the full step is accepted.
         """
 
+        system = self.system
         self.niter = 0
+        use_ls = self.config.linesearch
+
+        if use_ls:
+            x0 = np.empty_like(system.dae.x)
+            y0 = np.empty_like(system.dae.y)
+            merit_history = []
+
+        # initial residual (reused by first iteration)
+        self.fg_update()
+
         while True:
-            mis = self.nr_step()
+            mis = self._max_mis()
             logger.info('%d: |F(x)| = %.10g', self.niter, mis)
 
-            # store the increment
             if self.niter == 0:
                 self.mis[0] = mis
             else:
                 self.mis.append(mis)
 
-            # check for convergence
             if mis < self.config.tol:
                 self.converged = True
+                system.vars_to_models()
                 break
 
             if self.niter > self.config.max_iter:
@@ -187,6 +210,54 @@ class PFlow(BaseRoutine):
             if mis > 1e4 * self.mis[0]:
                 logger.error('Mismatch increased too fast. Convergence is not likely.')
                 break
+
+            # --- Jacobian update ---
+            if self.config.method != 'dishonest' or self.niter < self.config.n_factorize:
+                system.j_update(self.models)
+                self.solver.worker.new_A = True
+
+            # --- solve linear system ---
+            self.res[:system.dae.n] = -system.dae.f[:]
+            self.res[system.dae.n:] = -system.dae.g[:]
+
+            self.A = sparse([[system.dae.fx, system.dae.gx],
+                             [system.dae.fy, system.dae.gy]])
+
+            if not self.config.linsolve:
+                self.inc = self.solver.solve(self.A, self.res)
+            else:
+                self.inc = self.solver.linsolve(self.A, self.res)
+
+            inc_x = np.ravel(self.inc[:system.dae.n])
+            inc_y = np.ravel(self.inc[system.dae.n:])
+
+            # --- apply step ---
+            if use_ls:
+                merit_cur = np.dot(system.dae.f, system.dae.f) + np.dot(system.dae.g, system.dae.g)
+                merit_history.append(merit_cur)
+                merit_ref = max(merit_history[-3:])
+
+                x0[:] = system.dae.x
+                y0[:] = system.dae.y
+
+                alpha = 1.0
+                for _ in range(4):
+                    system.dae.x[:] = x0 + alpha * inc_x
+                    system.dae.y[:] = y0 + alpha * inc_y
+                    system.vars_to_models()
+                    self.fg_update()
+
+                    merit_new = np.dot(system.dae.f, system.dae.f) + np.dot(system.dae.g, system.dae.g)
+                    if merit_new < merit_ref:
+                        break
+
+                    alpha *= 0.5
+                    logger.debug("Line search backtrack: alpha=%.4g", alpha)
+            else:
+                system.dae.x[:] += inc_x
+                system.dae.y[:] += inc_y
+                system.vars_to_models()
+                self.fg_update()
 
             self.niter += 1
 
@@ -205,7 +276,7 @@ class PFlow(BaseRoutine):
         out = list()
         out.append('')
         out.append('-> Power flow calculation')
-        out.append(f'{"Numba":>16s}: {"On" if self.system.config.numba else "Off"}')
+        out.append(f'{"Numba":>16s}: {"On" if self.system.runtime.numba else "Off"}')
         out.append(f'{"Sparse solver":>16s}: {self.solver.sparselib.upper()}')
         out.append(f'{"Solution method":>16s}: {self.config.method} method')
 
@@ -223,8 +294,6 @@ class PFlow(BaseRoutine):
         """
 
         system = self.system
-        if self.config.check_conn == 1:
-            self.system.connectivity()
 
         self.summary()
         self.init()
@@ -262,6 +331,9 @@ class PFlow(BaseRoutine):
             # make a copy of power flow solutions
             self.x_sol = system.dae.x.copy()
             self.y_sol = system.dae.y.copy()
+
+            # evaluate observable variables post-solve
+            system.b_update(self.models)
 
             if self.config.init_tds:
                 system.TDS.init()

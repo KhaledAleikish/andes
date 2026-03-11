@@ -30,6 +30,15 @@ class ModelFlags:
         True if initialize tds; False otherwise; None default to `tds`
     series : bool
         True if is series device
+    topo : bool
+        True if the model's status affects network topology.
+        Models with this flag cause ``ConnMan`` to be invalidated
+        when their effective status changes.
+    ybus : bool
+        True if the model contributes to the bus admittance matrix.
+        Models with this flag must implement a ``build_ybus()`` method
+        returning a kvxopt ``spmatrix`` of size ``(nb, nb)`` with
+        typecode ``'z'``.
     nr_iter : bool
         True if is series device
     f_num : bool
@@ -37,7 +46,10 @@ class ModelFlags:
     g_num : bool
         True if the model defines `g_numeric`
     j_num : bool
-        True if the model defines `j_numeric`
+        True if the model defines per-iteration `j_numeric`
+    j_setup : bool
+        True if the model defines one-time `j_setup` for Jacobian
+        sparsity pattern and constant values
     s_num : bool
         True if the model defines `s_numeric`
     sv_num : bool
@@ -48,8 +60,9 @@ class ModelFlags:
 
     def __init__(self, collate=False, pflow=False, tds=False,
                  pflow_init=None, tds_init=None, series=False,
+                 topo=False, ybus=False,
                  nr_iter=False, f_num=False, g_num=False, j_num=False,
-                 s_num=False, sv_num=False):
+                 j_setup=False, s_num=False, sv_num=False):
 
         self.collate = collate
         self.pflow = pflow
@@ -57,10 +70,13 @@ class ModelFlags:
         self.pflow_init = pflow_init
         self.tds_init = tds_init
         self.series = series
+        self.topo = topo
+        self.ybus = ybus
         self.nr_iter = nr_iter
         self.f_num = f_num
         self.g_num = g_num
         self.j_num = j_num
+        self.j_setup = j_setup
         self.s_num = s_num
         self.sv_num = sv_num
         self.sys_base = False
@@ -191,7 +207,30 @@ class Config:
         self._help = OrderedDict()
         self._tex = OrderedDict()
         self._alt = OrderedDict()
+        self._deprecated = {}
         self.add(dct, **kwargs)
+
+    def _warn_deprecated(self, key, level='warning'):
+        """Log a deprecation message for *key*, including the caller's hint
+        if one was registered in ``_deprecated[key]``."""
+        hint = self._deprecated.get(key, '')
+        msg = "Config '%s.%s' is deprecated and ignored." % (self._name, key)
+        if hint:
+            msg += ' ' + hint
+        getattr(logger, level)(msg)
+
+    def __setattr__(self, key, value):
+        if not key.startswith('_') and hasattr(self, '_deprecated') and key in self._deprecated:
+            self._warn_deprecated(key, level='debug')
+            return
+        super().__setattr__(key, value)
+
+    def __getattr__(self, key):
+        if key == '_deprecated':
+            raise AttributeError(key)
+        if '_deprecated' in self.__dict__ and key in self.__dict__['_deprecated']:
+            return 0
+        raise AttributeError(f"Config has no field '{key}'")
 
     def load(self, config):
         """
@@ -254,6 +293,10 @@ class Config:
         for key, val in kwargs.items():
             # skip existing entries that are already loaded (from config files)
             if key in self.__dict__:
+                continue
+
+            if hasattr(self, '_deprecated') and key in self._deprecated:
+                self._warn_deprecated(key)
                 continue
 
             self._set(key, val)
@@ -343,6 +386,12 @@ class Config:
         Check the validity of config values.
         """
         for key, val in self.as_dict().items():
+            if key not in self._help:
+                logger.warning(
+                    "Config '%s.%s' is not recognized and has no effect.",
+                    self._name, key)
+                continue
+
             if key not in self._alt:
                 continue
 
@@ -371,6 +420,9 @@ class Config:
             kwargs.update(dct)
 
         for key, val in kwargs.items():
+            if hasattr(self, '_deprecated') and key in self._deprecated:
+                self._warn_deprecated(key)
+                continue
             self._set(key, val)
 
         self.check()

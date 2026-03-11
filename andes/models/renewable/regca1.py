@@ -19,12 +19,15 @@ class REGCA1Data(ModelData):
     def __init__(self):
         ModelData.__init__(self)
 
-        self.bus = IdxParam(model='Bus',
+        self.bus = IdxParam(model='ACNode',
                             info="interface bus id",
                             mandatory=True,
+                            status_parent=True,
                             )
         self.gen = IdxParam(info="static generator index",
+                            model='StaticGen',
                             mandatory=True,
+                            replaces=True,
                             )
         self.Sn = NumParam(default=100.0, tex_name='S_n',
                            info='Model MVA base',
@@ -120,7 +123,7 @@ class REGCA1Model(Model):
                           indexer=self.bus,
                           tex_name=r'\theta',
                           info='Bus voltage angle',
-                          e_str='-Pe',
+                          e_str='-ue * Pe',
                           ename='P',
                           tex_ename='P',
                           )
@@ -130,7 +133,7 @@ class REGCA1Model(Model):
                           indexer=self.bus,
                           tex_name=r'V',
                           info='Bus voltage magnitude',
-                          e_str='-Qe',
+                          e_str='-ue * Qe',
                           ename='Q',
                           tex_ename='Q',
                           )
@@ -263,10 +266,9 @@ class REGCA1Model(Model):
                                K=self.Khv, R=1,
                                info='High voltage gain block',
                                lower=0, upper=999, no_upper=True,
+                               allow_adjust=False,
                                tex_name='H_{VG}'
                                )
-        self.HVG.lim.no_warn = True
-        self.HVG.lim.allow_adjust = False
 
         self.Iqout = GainLimiter(u='S1_y - HVG_y',
                                  K=1, R=1,
@@ -279,12 +281,6 @@ class REGCA1Model(Model):
                         v_str='p0', e_str='Ipout * v - Pe')
         self.Qe = Algeb(tex_name='Q_e', info='Reactive power output',
                         v_str='q0', e_str='Iqout_y * v - Qe')
-
-    def v_numeric(self, **kwargs):
-        """
-        Disable the corresponding `StaticGen`s.
-        """
-        self.system.groups['StaticGen'].set(src='u', idx=self.gen.v, attr='v', value=0)
 
 
 class REGCA1(REGCA1Data, REGCA1Model):

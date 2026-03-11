@@ -134,6 +134,9 @@ class ConstService(BaseService):
     ----------
     v : array-like or a scalar
         ConstService value
+    _v_t0 : np.ndarray or None
+        ``v`` at t=0, saved by :meth:`snapshot_init`.  Used by
+        :meth:`restore_init` to reset ``v`` to the post-init baseline.
     """
 
     def __init__(self,
@@ -150,39 +153,27 @@ class ConstService(BaseService):
         self.v_str: str = v_str
         self.v_numeric: Callable = v_numeric
         self.v: Union[float, int, np.ndarray] = 0.0
+        self._v_t0: Optional[np.ndarray] = None
         self.sequential = True
 
+    def snapshot_init(self):
+        """
+        Save the current ``v`` into ``_v_t0`` for :meth:`restore_init`.
 
-class SubsService(BaseService):
-    """
-    A service to be substituted by its ``v_str`` in equations where it appears.
+        Called by ``Model.snapshot_init`` at the end of ``TDS.init()``.
+        Only operates on array-valued services (skips scalars).
+        """
+        if isinstance(self.v, np.ndarray):
+            self._v_t0 = self.v.copy()
 
-    ``SubsService`` is useful for eliminating explicit algebraic variables from
-    equations.
+    def restore_init(self):
+        """
+        Restore ``v`` from ``_v_t0`` saved by :meth:`snapshot_init`.
 
-    Examples
-    --------
-
-    If one defines the following inside ``__init__()``:
-
-    .. code:: python
-
-        self.vd = SubsService(v_str='v * cos(delta - a)') self.p =
-        Algeb(e_str='vd * Id + vq * Iq')
-
-    At code-generation time, in ``p`` 's equation, the ``vd`` variable will be
-    replaced by its full expression, namely, ``v * cos(delta - a)``.
-    """
-
-    def __init__(self,
-                 v_str: Optional[str] = None,
-                 name: Optional[str] = None,
-                 tex_name: Optional[str] = None,
-                 info: Optional[str] = None,
-                 unit: Optional[str] = None,
-                 ):
-        super().__init__(name=name, tex_name=tex_name, info=info, unit=unit)
-        self.v_str: str = v_str
+        Called by ``Model.restore_init`` during ``TDS.reinit()``.
+        """
+        if self._v_t0 is not None:
+            self.v[:] = self._v_t0
 
 
 class VarService(ConstService):
@@ -221,9 +212,26 @@ class VarService(ConstService):
 
     Warnings
     --------
-    `VarService` is not solved with other algebraic equations, meaning that
-    there is one step "delay" between the algebraic variables and `VarService`.
-    Use an algebraic variable whenever possible.
+    ``VarService`` is intended for non-differentiable expressions (e.g.,
+    ``Abs()``, ``re()``, ``im()``) that cannot appear in algebraic
+    equations. If the expression is differentiable, an ``Algeb`` variable
+    should be used instead.
+
+    During model initialization, ``VarService`` is evaluated *before* any
+    variable ``v_str`` assignment is computed. If the expression references
+    algebraic or state variables, those variables will still hold their
+    default (typically zero) values, resulting in an incorrect initial
+    ``VarService`` value. Variables whose ``v_str`` depends on this
+    ``VarService`` will consequently be initialized from an erroneous
+    starting point. At runtime, this effect is self-correcting because
+    ``VarService`` is re-evaluated every iteration with updated variable
+    values. However, the incorrect initial value can cause convergence
+    difficulties or incorrect limiter flag settings during the first few
+    iterations.
+
+    ``VarService`` is not solved simultaneously with algebraic equations,
+    meaning that a one-step delay exists between the algebraic variables
+    and the ``VarService`` value.
     """
 
     def __init__(self,
@@ -245,6 +253,14 @@ class VarService(ConstService):
                          v_str=v_str,
                          v_numeric=v_numeric)
         self.sequential = sequential
+
+    def snapshot_init(self):
+        """No-op: VarService is recomputed each step."""
+        pass
+
+    def restore_init(self):
+        """No-op: VarService is recomputed each step."""
+        pass
 
 
 class EventFlag(VarService):
@@ -503,7 +519,7 @@ class BackRef(BaseService):
 
     where the member attribute name `Bus` needs to match exactly model name that
     `Area` wants to collect `idx` for. Similarly, one can define
-    ``self.ACTopology = BackRef()`` to collect devices in the `ACTopology` group
+    ``self.ACNode = BackRef()`` to collect devices in the `ACNode` group
     that references Area.
 
     The collection of `idx` happens in
@@ -1222,12 +1238,16 @@ class InitChecker(OperationService):
     def check(self):
         """
         Check the bounds and equality conditions.
+
+        Skips offline devices using the owner model's effective status.
         """
         if not self.enable:
             return
 
         if self._v is None:
             self._v = np.zeros_like(self.u.v)
+
+        online = self.owner.get_status().astype(bool)
 
         for check in self.checks:
             limit = check[0]
@@ -1237,9 +1257,10 @@ class InitChecker(OperationService):
             if limit is None:
                 continue
 
-            self.v[:] = np.logical_or(self.v, func(self.u.v, limit.v))
+            violated = func(self.u.v, limit.v)
+            self.v[:] = np.logical_or(self.v, violated)
 
-            pos = np.argwhere(func(self.u.v, limit.v)).ravel()
+            pos = np.argwhere(np.logical_and(violated, online)).ravel()
 
             if len(pos) == 0:
                 continue

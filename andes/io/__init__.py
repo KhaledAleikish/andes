@@ -100,14 +100,18 @@ def guess(system):
     if not true_format:
         logger.error('Unable to determine case format.')
 
-    # guess addfile format
-    if files.addfile:
-        _, add_ext = os.path.splitext(files.addfile)
+    # guess addfile formats
+    files.add_format = []
+    for addfile in files.addfile:
+        _, add_ext = os.path.splitext(addfile)
         for key, val in input_formats.items():
             if add_ext[1:] in val:
-                files.add_format = key
-                logger.debug('Addfile format guessed as %s.', key)
+                files.add_format.append(key)
+                logger.debug('Addfile "%s" format guessed as %s.', addfile, key)
                 break
+        else:
+            logger.warning('Unable to determine format for addfile "%s".', addfile)
+            files.add_format.append(None)
 
     return true_format
 
@@ -141,15 +145,21 @@ def parse(system):
     _, s = elapsed(t)
     logger.info('Input file parsed in %s.', s)
 
-    # Try parsing the addfile
-    t, _ = elapsed()
-
-    if system.files.addfile:
-        logger.info('Parsing additional file "%s"...', system.files.addfile)
-        add_format = system.files.add_format
+    # Try parsing the addfiles
+    for addfile, add_format in zip(system.files.addfile, system.files.add_format):
+        if add_format is None:
+            logger.error('Unknown format for addfile "%s". Skipping.', addfile)
+            return False
+        t, _ = elapsed()
+        logger.info('Parsing additional file "%s"...', addfile)
         add_parser = importlib.import_module('.' + add_format, __name__)
-        if not add_parser.read_add(system, system.files.addfile):
-            logger.error('Error parsing addfile "%s" with %s parser.', system.files.addfile, input_format)
+        _, ext = os.path.splitext(addfile)
+        if ext.lower() == '.dyr' and hasattr(add_parser, 'read_add'):
+            add_fn = add_parser.read_add
+        else:
+            add_fn = add_parser.read
+        if not add_fn(system, addfile):
+            logger.error('Error parsing addfile "%s" with <%s> parser.', addfile, add_format)
             return False
         _, s = elapsed(t)
         logger.info('Addfile parsed in %s.', s)

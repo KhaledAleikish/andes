@@ -209,29 +209,33 @@ class TGOV1N(TGOV1Data, TGOV1NModel):
     """
     New TGOV1 (TGOV1N) turbine governor model.
 
-    The TGOV1N model that sums ``pref`` and ``paux`` signals after the droop.
+    The TGOV1N model sums ``pref`` and ``paux`` signals after the droop.
     This model is useful for incorporating AGC and scheduling signals, which
-    will not be multiplied by ``1/R`` like in the original TGOV1 model.
+    will not be multiplied by ``1/R`` as in the original TGOV1 model.
 
-    Scheduling changes should write to ``pref0.v`` in place. AGC signal should
-    write to ``paux0.v`` in place.
+    The recommended approach for modifying setpoints is the group-level API,
+    which resolves the controller chain automatically:
+
+    .. code:: python
+
+        ss.SynGen.set_pref(ss, gen_idx, value)   # writes to pref0
+        ss.SynGen.set_paux(ss, gen_idx, value)    # writes to paux0
 
     Modifying ``tm0`` is not allowed.
 
-    Examples
-    --------
-    To update all ``paux0`` values to ``paux_new``, which contains the new
-    values, do
+    Advanced: direct array access
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    For bulk operations, direct in-place array assignment can be used:
 
     .. code:: python
 
-        ss.TGOV1N.paux0.v[:] = paux_new  # in-place update of the `paux0.v` array
+        ss.TGOV1N.paux0.v[:] = paux_new  # in-place update of the paux0.v array
 
-    instead of
+    The array reference must not be replaced:
 
     .. code:: python
 
-        ss.TGOV1N.paux0.v = paux_new  # error; changes the reference of `paux0.v`
+        ss.TGOV1N.paux0.v = paux_new  # error; disconnects the variable
 
     """
 

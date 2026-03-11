@@ -23,6 +23,7 @@ class REECA1Data(ModelData):
         self.reg = IdxParam(model='RenGen',
                             info='Renewable generator idx',
                             mandatory=True,
+                            status_parent=True,
                             )
 
         self.busr = IdxParam(info='Optional remote bus for voltage control',
@@ -111,10 +112,12 @@ class REECA1Data(ModelData):
         self.QMax = NumParam(default=999.0,
                              tex_name='Q_{max}',
                              info='Upper limit for reactive power regulator',
+                             power=True,
                              )
         self.QMin = NumParam(default=-999.0,
                              tex_name='Q_{min}',
                              info='Lower limit for reactive power regulator',
+                             power=True,
                              )
         self.VMAX = NumParam(default=999.0,
                              tex_name='V_{max}',
@@ -152,18 +155,22 @@ class REECA1Data(ModelData):
         self.dPmax = NumParam(default=999.0,
                               tex_name='d_{Pmax}',
                               info='Power reference max. ramp rate (>0)',
+                              power=True,
                               )
         self.dPmin = NumParam(default=-999.0,
                               tex_name='d_{Pin}',
                               info='Power reference min. ramp rate (<0)',
+                              power=True,
                               )
         self.PMAX = NumParam(default=999.0,
                              tex_name='P_{max}',
                              info='Max. active power limit > 0',
+                             power=True,
                              )
         self.PMIN = NumParam(default=0.0,
                              tex_name='P_{min}',
                              info='Min. active power limit',
+                             power=True,
                              )
         self.Imax = NumParam(default=999.0,
                              tex_name='I_{max}',
@@ -253,6 +260,8 @@ class REECA1Model(Model):
     REEC_A model implementation.
     """
 
+    _setpoints = {'pref': 'Pref0', 'qref': 'qref0'}
+
     def __init__(self, system, config):
         Model.__init__(self, system, config)
 
@@ -334,12 +343,12 @@ class REECA1Model(Model):
 
         self.Ipcmd = ExtAlgeb(model='RenGen', src='Ipcmd', indexer=self.reg, export=False,
                               info='Retrieved Ipcmd of RenGen',
-                              e_str='-Ipcmd0 + IpHL_y',
+                              e_str='ue * (-Ipcmd0 + IpHL_y)',
                               )
 
         self.Iqcmd = ExtAlgeb(model='RenGen', src='Iqcmd', indexer=self.reg, export=False,
                               info='Retrieved Iqcmd of RenGen',
-                              e_str='-Iqcmd0 - IqHL_y',   # negative sign here, different from `Ipcmd`
+                              e_str='ue * (-Iqcmd0 - IqHL_y)',   # negative sign here, different from `Ipcmd`
                               )
 
         self.p0 = ExtService(model='RenGen',
@@ -452,9 +461,15 @@ class REECA1Model(Model):
 
         # --- Upper portion - Iqinj calculation ---
 
+        # PSS/E convention: Vref0=0 means use initial bus voltage
+        self.Vref0r = ConstService(v_str='Vref0',
+                                   v_numeric=self._replace_vref0,
+                                   tex_name='V_{ref0,r}',
+                                   info='Replaced Vref0 (0 -> bus V)')
+
         self.Verr = Algeb(info='Voltage error (Vref0)',
-                          v_str='Vref0 - s0_y',
-                          e_str='Vref0 - s0_y - Verr',
+                          v_str='Vref0r - s0_y',
+                          e_str='Vref0r - s0_y - Verr',
                           tex_name='V_{err}',
                           )
         self.dbV = DeadBand1(u=self.Verr, lower=self.dbd1, upper=self.dbd2,
@@ -492,10 +507,15 @@ class REECA1Model(Model):
                         e_str='1.0 - wg',
                         )
 
+        self.Pref0 = ConstService(v_str='p0',
+                                  tex_name='P_{ref0}',
+                                  info='initial P ref',
+                                  )
+
         self.Pref = Algeb(tex_name='P_{ref}',
                           info='external P ref',
                           v_str='p0 / wg',
-                          e_str='p0 / wg - Pref',
+                          e_str='Pref0 / wg - Pref',
                           unit='p.u.',
                           )
 
@@ -670,6 +690,13 @@ class REECA1Model(Model):
         self.IqHL = GainLimiter(u='Qsel + Iqinj',
                                 K=1, R=1,
                                 lower=self.Iqmin, upper=self.Iqmax)
+
+    def _replace_vref0(self, **kwargs):
+        """PSS/E convention: Vref0=0 means use initial bus voltage."""
+        out = np.array(self.Vref0.v, dtype=float)
+        mask = np.equal(out, 0.0)
+        out[mask] = self.v.v[mask]
+        return out
 
 
 class REECA1(REECA1Data, REECA1Model):

@@ -16,12 +16,15 @@ class REGF1Data(ModelData):
     def __init__(self):
         ModelData.__init__(self)
 
-        self.bus = IdxParam(model='Bus',
+        self.bus = IdxParam(model='ACNode',
                             info="interface bus id",
                             mandatory=True,
+                            status_parent=True,
                             )
         self.gen = IdxParam(info="static generator index",
+                            model='StaticGen',
                             mandatory=True,
+                            replaces=True,
                             )
         self.Sn = NumParam(default=100.0, tex_name='S_n',
                            info='Model MVA base',
@@ -151,6 +154,8 @@ class REGF1Model(Model):
     Common variables and services for VSG models.
     """
 
+    _setpoints = {'pref': 'Pref', 'qref': 'Qref', 'vref': 'vref'}
+
     def __init__(self, system, config):
         Model.__init__(self, system, config)
         self.flags.tds = True
@@ -161,14 +166,14 @@ class REGF1Model(Model):
                           indexer=self.bus,
                           tex_name=r'\theta',
                           info='Bus voltage angle',
-                          e_str='-u * Pe',
+                          e_str='-ue * Pe',
                           )
         self.v = ExtAlgeb(model='Bus',
                           src='v',
                           indexer=self.bus,
                           tex_name='V',
                           info='Bus voltage magnitude',
-                          e_str='-u * Qe',
+                          e_str='-ue * Qe',
                           )
 
         self.p0s = ExtService(model='StaticGen',
@@ -223,8 +228,15 @@ class REGF1Model(Model):
                                 )
         # --- Constants end ---
 
-        self.Paux = Algeb(v_str='0', e_str='Paux')
-        self.Qaux = Algeb(v_str='0', e_str='Qaux')
+        self.Paux0 = ConstService(v_str='0',
+                                  tex_name='P_{aux0}',
+                                  info='const. auxiliary P input')
+        self.Qaux0 = ConstService(v_str='0',
+                                  tex_name='Q_{aux0}',
+                                  info='const. auxiliary Q input')
+
+        self.Paux = Algeb(v_str='Paux0', e_str='Paux0 - Paux')
+        self.Qaux = Algeb(v_str='Qaux0', e_str='Qaux0 - Qaux')
 
         # s0 and s1
         self.Psen = Lag(u='Pe', K=1, T=self.Tr)
@@ -257,12 +269,12 @@ class REGF1Model(Model):
 
         self.vd = Algeb(tex_name='V_d',
                         info='d-axis voltage',
-                        e_str='u * v * cos(delta - a) - vd',
+                        e_str='ue * v * cos(delta - a) - vd',
                         v_str='vd0')
 
         self.vq = Algeb(tex_name='V_q',
                         info='q-axis voltage',
-                        e_str='- u * v * sin(delta - a) - vq',
+                        e_str='- ue * v * sin(delta - a) - vq',
                         v_str='vq0')
 
         self.Pe = Algeb(tex_name='P_e',
@@ -285,12 +297,6 @@ class REGF1Model(Model):
                         diag_eps=True,
                         )
 
-    def v_numeric(self, **kwargs):
-        """
-        Disable the corresponding `StaticGen`s.
-        """
-        self.system.groups['StaticGen'].set(src='u', idx=self.gen.v, attr='v', value=0)
-
 
 class REGF1Primary:
     """
@@ -306,7 +312,7 @@ class REGF1Primary:
 
         self.vref2 = Algeb(tex_name=r'v_{ref2}',
                            info='voltage reference after droop',
-                           e_str='(u * PIqlim_y - Qsen_y) * Qdrp + vref - vref2',
+                           e_str='(ue * PIqlim_y - Qsen_y) * Qdrp + vref - vref2',
                            v_str='u * vref')
 
 

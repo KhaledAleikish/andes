@@ -10,13 +10,15 @@ logger = logging.getLogger(__name__)
 class GENBaseData(ModelData):
     def __init__(self):
         super().__init__()
-        self.bus = IdxParam(model='Bus',
+        self.bus = IdxParam(model='ACNode',
                             info="interface bus id",
                             mandatory=True,
+                            status_parent=True,
                             )
         self.gen = IdxParam(info="static generator index",
                             model='StaticGen',
                             mandatory=True,
+                            replaces=True,
                             )
         self.coi = IdxParam(model='COI',
                             info="center of inertia index",
@@ -97,6 +99,9 @@ class GENBase(Model):
     Defines shared network and dq-component variables.
     """
 
+    # Fallback setpoints when no controller (governor/exciter) is connected.
+    _setpoints = {'pref': 'tm0', 'vref': 'vf0'}
+
     def __init__(self, system, config):
         super().__init__(system, config)
         self.group = 'SynGen'
@@ -117,12 +122,12 @@ class GENBase(Model):
                            unit='rad',
                            v_str='delta0',
                            tex_name=r'\delta',
-                           e_str='u * (2 * pi * fn) * (omega - 1)')
+                           e_str='ue * (2 * pi * fn) * (omega - 1)')
         self.omega = State(info='rotor speed',
                            unit='pu (Hz)',
                            v_str='u',
                            tex_name=r'\omega',
-                           e_str='u * (tm - te - D * (omega - 1))',
+                           e_str='ue * (tm - te - D * (omega - 1))',
                            t_const=self.M,
                            )
 
@@ -132,7 +137,7 @@ class GENBase(Model):
                           indexer=self.bus,
                           tex_name=r'\theta',
                           info='Bus voltage phase angle',
-                          e_str='-u * (vd * Id + vq * Iq)',
+                          e_str='-ue * (vd * Id + vq * Iq)',
                           ename='P',
                           tex_ename='P',
                           is_input=True,
@@ -142,7 +147,7 @@ class GENBase(Model):
                           indexer=self.bus,
                           tex_name=r'V',
                           info='Bus voltage magnitude',
-                          e_str='-u * (vq * Id - vd * Iq)',
+                          e_str='-ue * (vq * Id - vd * Iq)',
                           ename='Q',
                           tex_ename='Q',
                           is_input=True,
@@ -163,12 +168,12 @@ class GENBase(Model):
 
         self.vd = Algeb(info='d-axis voltage',
                         v_str='u * vd0',
-                        e_str='u * v * sin(delta - a) - vd',
+                        e_str='ue * v * sin(delta - a) - vd',
                         tex_name=r'V_d',
                         )
         self.vq = Algeb(info='q-axis voltage',
                         v_str='u * vq0',
-                        e_str='u * v * cos(delta - a) - vq',
+                        e_str='ue * v * cos(delta - a) - vq',
                         tex_name=r'V_q',
                         )
 
@@ -180,12 +185,12 @@ class GENBase(Model):
         self.te = Algeb(info='electric torque',
                         tex_name=r'\tau_e',
                         v_str='u * tm0',
-                        e_str='u * (psid * Iq - psiq * Id) - te',
+                        e_str='ue * (psid * Iq - psiq * Id) - te',
                         )
         self.vf = Algeb(info='excitation voltage',
                         unit='pu',
                         v_str='u * vf0',
-                        e_str='u * vf0 - vf',
+                        e_str='ue * vf0 - vf',
                         tex_name=r'v_f'
                         )
 
@@ -199,7 +204,7 @@ class GENBase(Model):
                             info='d-axis armature excitation current',
                             unit='p.u (kV)',
                             v_str='u * vf0',
-                            e_str='u * vf0 - XadIfd'
+                            e_str='ue * vf0 - XadIfd'
                             )  # e_str to be provided. Not available in GENCLS
 
         self.subidx = ExtParam(model='StaticGen',
@@ -244,20 +249,12 @@ class GENBase(Model):
 
         self.Pe = Algeb(tex_name='P_e',
                         info='active power injection',
-                        e_str='u * (vd * Id + vq * Iq) - Pe',
+                        e_str='ue * (vd * Id + vq * Iq) - Pe',
                         v_str='u * (vd0 * Id0 + vq0 * Iq0)')
         self.Qe = Algeb(tex_name='Q_e',
                         info='reactive power injection',
-                        e_str='u * (vq * Id - vd * Iq) - Qe',
+                        e_str='ue * (vq * Id - vd * Iq) - Qe',
                         v_str='u * (vq0 * Id0 - vd0 * Iq0)')
-
-    def v_numeric(self, **kwargs):
-        """
-        Disable static generators with a linked synchronous machine.
-        """
-
-        mask_idx = [self.gen.v[i] for i in range(self.n) if self.u.v[i] == 1]
-        self.system.groups['StaticGen'].set(src='u', idx=mask_idx, attr='v', value=0)
 
 
 class Flux0:
@@ -269,12 +266,12 @@ class Flux0:
         self.psid = Algeb(info='d-axis flux',
                           tex_name=r'\psi_d',
                           v_str='u * psid0',
-                          e_str='u * (ra*Iq + vq) - psid',
+                          e_str='ue * (ra*Iq + vq) - psid',
                           )
         self.psiq = Algeb(info='q-axis flux',
                           tex_name=r'\psi_q',
                           v_str='u * psiq0',
-                          e_str='u * (ra*Id + vd) + psiq',
+                          e_str='ue * (ra*Id + vd) + psiq',
                           )
 
         self.Id.e_str += '+ psid'
@@ -290,12 +287,12 @@ class Flux1:
         self.psid = Algeb(info='d-axis flux',
                           tex_name=r'\psi_d',
                           v_str='u * psid0',
-                          e_str='u * (ra * Iq + vq) - omega * psid',
+                          e_str='ue * (ra * Iq + vq) - omega * psid',
                           )
         self.psiq = Algeb(info='q-axis flux',
                           tex_name=r'\psi_q',
                           v_str='u * psiq0',
-                          e_str='u * (ra * Id + vd) + omega * psiq',
+                          e_str='ue * (ra * Id + vd) + omega * psiq',
                           )
 
         self.Id.e_str += '+ psid'
@@ -311,12 +308,12 @@ class Flux2:
         self.psid = State(info='d-axis flux',
                           tex_name=r'\psi_d',
                           v_str='u * psid0',
-                          e_str='u * 2 * pi * fn * (ra * Id + vd + omega * psiq)',
+                          e_str='ue * 2 * pi * fn * (ra * Id + vd + omega * psiq)',
                           )
         self.psiq = State(info='q-axis flux',
                           tex_name=r'\psi_q',
                           v_str='u * psiq0',
-                          e_str='u * 2 * pi * fn * (ra * Iq + vq - omega * psid)',
+                          e_str='ue * 2 * pi * fn * (ra * Iq + vq - omega * psid)',
                           )
 
         self.Id.e_str += '+ psid'

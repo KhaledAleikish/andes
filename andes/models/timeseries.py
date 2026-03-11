@@ -10,7 +10,7 @@ from collections import OrderedDict
 from andes.core.model import ModelData, Model  # noaq
 from andes.core.param import DataParam, IdxParam, NumParam  # noqa
 from andes.core.discrete import Switcher
-from andes.shared import pd, np, tqdm
+from andes.shared import pd, np
 
 logger = logging.getLogger(__name__)
 
@@ -217,11 +217,10 @@ class TimeSeriesModel(Model):
                 if len(value) == 0:
                     continue
                 value = value[0]
-                self.system.__dict__[model].set(dest, dev_idx, 'v', value)
+                self.system.__dict__[model].set(dest, dev_idx, value)
 
-                if self.system.options.get("verbose", 20) <= 20:
-                    tqdm.write("<TimeSeries %s> set %s=%g for %s.%s at t=%g" %
-                               (idx, dest, value, model, dev_idx, t))
+                logger.info('<TimeSeries %s> set %s=%g for %s.%s at t=%g',
+                            idx, dest, value, model, dev_idx, t)
 
     def apply_interpolate(self, t):
         """

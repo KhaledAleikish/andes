@@ -3,6 +3,7 @@ Phasor-domain shunt compensator model.
 """
 
 from andes.core import ModelData, IdxParam, NumParam, Model, ExtAlgeb
+from andes.shared import spmatrix
 
 
 class ShuntData(ModelData):
@@ -10,7 +11,8 @@ class ShuntData(ModelData):
     def __init__(self, system=None, name=None):
         super().__init__(system, name)
 
-        self.bus = IdxParam(model='Bus', info="idx of connected bus", mandatory=True)
+        self.bus = IdxParam(model='ACNode', info="idx of connected bus", mandatory=True,
+                            status_parent=True)
 
         self.Sn = NumParam(default=100.0, info="Power rating", non_zero=True, tex_name='S_n')
         self.Vn = NumParam(default=110.0, info="AC voltage rating", non_zero=True, tex_name='V_n')
@@ -29,6 +31,7 @@ class ShuntModel(Model):
         self.group = 'StaticShunt'
         self.flags.pflow = True
         self.flags.tds = True
+        self.flags.ybus = True
 
         self.a = ExtAlgeb(model='Bus', src='a', indexer=self.bus, tex_name=r'\theta',
                           ename='P',
@@ -39,8 +42,14 @@ class ShuntModel(Model):
                           tex_ename='Q',
                           )
 
-        self.a.e_str = 'u * v**2 * g'
-        self.v.e_str = '-u * v**2 * b'
+        self.a.e_str = 'ue * v**2 * g'
+        self.v.e_str = '-ue * v**2 * b'
+
+    def build_ybus(self):
+        """Return shunt admittance contribution to Y-bus as a sparse matrix."""
+        nb = self.system.Bus.n
+        y = self.u.v * (self.g.v + 1j * self.b.v)
+        return spmatrix(y, self.a.a, self.a.a, (nb, nb), 'z')
 
 
 class Shunt(ShuntData, ShuntModel):

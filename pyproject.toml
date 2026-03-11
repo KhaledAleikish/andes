@@ -9,14 +9,14 @@ description = "Python software for symbolic power system modeling and numerical 
 readme = "README.md"
 license = {text = "GPL-3.0-or-later"}
 authors = [{name = "Hantao Cui", email = "cuihantao@gmail.com"}]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Natural Language :: English",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     "Environment :: Console",
 ]
@@ -24,7 +24,7 @@ classifiers = [
 dependencies = [
     "kvxopt>=1.3.2.0,<1.4",
     "numpy",
-    "scipy<=1.16.3",
+    "scipy<2",
     "sympy>=1.6,!=1.10.0",
     "pandas",
     "matplotlib",
@@ -35,11 +35,8 @@ dependencies = [
     "tqdm",
     "ipywidgets",
     "pyyaml",
-    "coloredlogs",
     "chardet",
-    "psutil",
     "texttable",
-    "numba",
 ]
 
 [project.optional-dependencies]
@@ -60,6 +57,7 @@ dev = [
     "myst-parser>=0.15",
     "myst-nb>=0.13",
     "mdit-py-plugins>=0.3.1,<0.4",
+    "plotly",
     "pre-commit",
 ]
 doc = [
@@ -72,16 +70,24 @@ doc = [
     "myst-parser>=0.15",
     "myst-nb>=0.13",
     "mdit-py-plugins>=0.3.1,<0.4",
+    "plotly",
 ]
 interop = [
-    "pandapower>=3,<=3.3",
+    "pandapower>=3,<=3.4",
+    "pandas>=2.3,<3",
     "pypowsybl",
 ]
 web = [
     "ipywidgets==7.7",
 ]
+rl = [
+    "gymnasium>=1.0",
+]
+performance = [
+    "numba",
+]
 all = [
-    "andes[dev,doc,interop,web]",
+    "andes[dev,doc,interop,web,rl,performance]",
 ]
 
 [project.scripts]
@@ -105,6 +111,9 @@ andes = [
     "cases/**/*.json",
     "io/*.yaml",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.setuptools_scm]
 version_scheme = "post-release"

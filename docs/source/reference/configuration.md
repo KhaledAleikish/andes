@@ -2,15 +2,39 @@
 
 ANDES behavior can be customized through configuration options for the system, routines, and models. This reference documents all available configuration options and how to modify them.
 
+## Configuration Resolution
+
+ANDES resolves configuration from multiple sources using a layered priority system. When the same option is specified in more than one source, the higher-priority source takes precedence. The four sources, listed from lowest to highest priority, are:
+
+1. **Compiled defaults**: Hard-coded values defined in each model, routine, and system configuration class. These values are used when no external source provides an override.
+
+2. **User configuration file** (`andes.rc`): A persistent INI-format file located at `~/.andes/andes.rc`. Settings in this file apply globally to all ANDES sessions on the machine and serve as user-level defaults.
+
+3. **Embedded case configuration** (`_config`): Configuration records embedded within xlsx or json case files. These settings travel with the case file and override any `andes.rc` values for the same option, ensuring reproducibility when cases are shared between users or machines. Note that PSS/E and MATPOWER formats do not support embedded configuration.
+
+4. **Command-line overrides** (`config_option`): Options passed via the `-O` flag on the command line or the `config_option` argument in `andes.load()` / `andes.run()`. These have the highest priority and override all other sources.
+
+The resolution is performed during system initialization in three phases. First, `andes.rc` is loaded into an internal configuration object. Second, if the case file contains a `_config` section, its entries are merged, overwriting any overlapping keys. Third, command-line overrides are applied. The merged configuration object is then distributed to the system, all routines, and all models during their construction.
+
+This layered design allows a single case file to carry its intended simulation settings while still permitting per-user customization through the rc file and per-run adjustments through the command line.
+
+```
+Priority (lowest → highest):
+compiled defaults  <  andes.rc  <  _config in data file  <  CLI config_option
+```
+
 ## Configuration Levels
 
-ANDES uses a hierarchical configuration system with three levels, each controlling different aspects of the software.
+ANDES uses a hierarchical configuration system with multiple levels, each controlling different aspects of the software.
 
 | Level | Scope | Example |
 |-------|-------|---------|
-| System | Global settings | `freq`, `mva` |
+| System | Case-relevant global settings | `freq`, `mva` |
+| Runtime | Machine/environment settings | `numba`, `sparselib` |
 | Routine | Analysis settings | `PFlow.tol`, `TDS.tf` |
 | Model | Model-specific | `TGOV1.allow_adjust` |
+
+System, routine, and model configurations are written to both `andes.rc` and `_config` in data files. Runtime configuration is written only to `andes.rc` (under the `[Runtime]` section) and is never embedded in case data files, because machine-specific settings such as JIT compilation or sparse solver selection should not travel with the case.
 
 ## Viewing Configuration
 
@@ -23,8 +47,11 @@ import andes
 
 ss = andes.load('case.xlsx')
 
-# System config
+# System config (case-relevant)
 print(ss.config)
+
+# Runtime config (machine/environment)
+print(ss.runtime)
 
 # Power flow config
 print(ss.PFlow.config)
@@ -50,9 +77,9 @@ print(f"Tolerance: {ss.PFlow.config.tol}")
 
 ## Modifying Configuration
 
-### In Python (Runtime)
+### In Python
 
-The most common approach is to modify configuration after loading the system but before running any analysis routines. This allows you to adjust settings based on the specific requirements of your study.
+The most common approach is to modify configuration after loading the system but before running any analysis routines. This allows settings to be adjusted based on the specific requirements of each study.
 
 ```python
 ss = andes.load('case.xlsx')
@@ -97,15 +124,19 @@ andes --save-config
 
 ### Config File Format
 
-The configuration file uses INI format with sections corresponding to the system, routines, and models. Options are specified as key-value pairs within each section.
+The configuration file uses INI format with sections corresponding to the system, runtime, routines, and models. Options are specified as key-value pairs within each section.
 
 ```ini
 [System]
 freq = 60
 mva = 100
 
-[PFlow]
+[Runtime]
+numba = 1
 sparselib = klu
+seed = 0
+
+[PFlow]
 tol = 1e-6
 max_iter = 25
 
@@ -119,15 +150,39 @@ max_iter = 15
 allow_adjust = 1
 ```
 
+The `[Runtime]` section contains machine-specific settings (JIT compilation, sparse solver selection, NumPy error behavior) that are not written to case data files. All other sections appear in both `andes.rc` and the `_config` embedded in xlsx/json data files.
+
 ## System Options
 
-System-level options control global settings that affect the entire simulation.
+System-level options control case-relevant global settings. These are written to data files and travel with the case.
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `freq` | 60 | System frequency [Hz] |
 | `mva` | 100 | System base MVA |
+| `diag_eps` | 1e-8 | Diagonal perturbation for Jacobian singularity |
+| `warn_abnormal` | 1 | Warn on abnormal values during simulation |
+
+## Runtime Options
+
+Runtime options control machine-specific and environment settings. These are stored only in `andes.rc` under the `[Runtime]` section and are not embedded in case data files.
+
+| Option | Default | Description |
+|--------|---------|-------------|
 | `numba` | 1 | Enable Numba JIT compilation |
+| `sparselib` | klu | Sparse solver library (`klu`, `umfpack`, `spsolve`, `cupy`) |
+| `seed` | 0 | Random seed (0 = no seeding) |
+| `np_divide` | warn | NumPy divide-by-zero behavior |
+| `np_invalid` | warn | NumPy invalid floating-point behavior |
+| `dime_enabled` | 0 | Enable DiME streaming |
+| `save_stats` | 0 | Save call statistics |
+
+Runtime options can be accessed and modified via `ss.runtime`:
+
+```python
+ss.runtime.numba = 1
+ss.runtime.sparselib = 'umfpack'
+```
 
 ## Power Flow Options (PFlow)
 
@@ -137,7 +192,6 @@ Power flow configuration controls the Newton-Raphson iteration for steady-state 
 |--------|---------|-------------|
 | `tol` | 1e-6 | Convergence tolerance |
 | `max_iter` | 25 | Maximum iterations |
-| `sparselib` | klu | Sparse solver library |
 
 ## Time Domain Options (TDS)
 
@@ -166,10 +220,10 @@ All models with limiters support automatic limit adjustment. These options contr
 ANDES supports multiple sparse linear solvers for the Jacobian system. The choice of solver can affect both performance and numerical stability.
 
 ```python
-# Available solvers
-ss.PFlow.config.sparselib = 'klu'      # Default
-ss.PFlow.config.sparselib = 'umfpack'  # Alternative
-ss.PFlow.config.sparselib = 'kvxopt'   # Pure Python
+# Set solver via runtime config (system-wide)
+ss.runtime.sparselib = 'klu'      # Default (fastest)
+ss.runtime.sparselib = 'umfpack'  # Alternative
+ss.runtime.sparselib = 'spsolve'  # Pure Python (slowest)
 ```
 
 KLU is generally the fastest solver for power system problems and is recommended for most use cases.
@@ -179,13 +233,9 @@ KLU is generally the fastest solver for power system problems and is recommended
 Numba provides just-in-time compilation of numerical functions for improved performance. When enabled, the first execution compiles the functions (which takes additional time), but subsequent executions are significantly faster.
 
 ```python
-# Global enable
-andes.config_logger()
-andes.system.System.config.numba = True
-
-# Or per-system
+# Enable via runtime config
 ss = andes.load('case.xlsx')
-ss.config.numba = True
+ss.runtime.numba = True
 ```
 
 ## Limit Adjustment

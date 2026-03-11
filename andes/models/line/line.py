@@ -2,6 +2,8 @@
 AC transmission line and two-winding transformer line.
 """
 
+import warnings
+
 import numpy as np
 
 from andes.core import (ModelData, IdxParam, NumParam, DataParam,
@@ -17,8 +19,8 @@ class LineData(ModelData):
     def __init__(self):
         super().__init__()
 
-        self.bus1 = IdxParam(model='Bus', info="idx of from bus")
-        self.bus2 = IdxParam(model='Bus', info="idx of to bus")
+        self.bus1 = IdxParam(model='ACNode', info="idx of from bus", status_parent=True)
+        self.bus2 = IdxParam(model='ACNode', info="idx of to bus", status_parent=True)
 
         self.Sn = NumParam(default=100.0,
                            info="Power rating",
@@ -149,6 +151,8 @@ class Line(LineData, Model):
         self.group = 'ACLine'
         self.flags.pflow = True
         self.flags.tds = True
+        self.flags.topo = True
+        self.flags.ybus = True
 
         self.a1 = ExtAlgeb(model='Bus', src='a', indexer=self.bus1, tex_name='a_1',
                            info='phase angle of the from bus',
@@ -201,19 +205,19 @@ class Line(LineData, Model):
         self.itap.v_str = '1/tap'
         self.itap2.v_str = '1/tap/tap'
 
-        self.a1.e_str = 'u * (v1 ** 2 * (gh + ghk) * itap2  - \
+        self.a1.e_str = 'ue * (v1 ** 2 * (gh + ghk) * itap2  - \
                               v1 * v2 * (ghk * cos(a1 - a2 - phi) + \
                                          bhk * sin(a1 - a2 - phi)) * itap)'
 
-        self.v1.e_str = 'u * (-v1 ** 2 * (bh + bhk) * itap2 - \
+        self.v1.e_str = 'ue * (-v1 ** 2 * (bh + bhk) * itap2 - \
                               v1 * v2 * (ghk * sin(a1 - a2 - phi) - \
                                          bhk * cos(a1 - a2 - phi)) * itap)'
 
-        self.a2.e_str = 'u * (v2 ** 2 * (gh + ghk) - \
+        self.a2.e_str = 'ue * (v2 ** 2 * (gh + ghk) - \
                               v1 * v2 * (ghk * cos(a1 - a2 - phi) - \
                                          bhk * sin(a1 - a2 - phi)) * itap)'
 
-        self.v2.e_str = 'u * (-v2 ** 2 * (bh + bhk) + \
+        self.v2.e_str = 'ue * (-v2 ** 2 * (bh + bhk) + \
                               v1 * v2 * (ghk * sin(a1 - a2 - phi) + \
                                          bhk * cos(a1 - a2 - phi)) * itap)'
 
@@ -244,14 +248,16 @@ class Line(LineData, Model):
 
         return np.array(self.idx.v)[self.istf]
 
-    def build_y(self):
+    def build_ybus(self):
         """
-        Build bus admittance matrix. Store the matrix in ``self.Y``.
+        Build line contribution to the bus admittance matrix.
+
+        Store the result in ``self.Y`` and return it.
 
         Returns
         -------
         Y : spmatrix
-            Bus admittance matrix.
+            Line admittance contribution (sparse, complex).
         """
 
         nb = self.system.Bus.n
@@ -265,12 +271,23 @@ class Line(LineData, Model):
         mconj = np.conj(m)
 
         # build self and mutual admittances into Y
-        self.Y = spmatrix((y12 + y1) / m2 + ysh, self.a1.a, self.a1.a, (nb, nb), 'z')
+        self.Y = spmatrix((y12 + y1 + ysh) / m2, self.a1.a, self.a1.a, (nb, nb), 'z')
         self.Y -= spmatrix(y12 / mconj, self.a1.a, self.a2.a, (nb, nb), 'z')
         self.Y -= spmatrix(y12 / m, self.a2.a, self.a1.a, (nb, nb), 'z')
         self.Y += spmatrix(y12 + y2 + ysh, self.a2.a, self.a2.a, (nb, nb), 'z')
 
         return self.Y
+
+    def build_y(self):
+        """
+        Deprecated. Use :meth:`build_ybus` or :meth:`System.build_ybus` instead.
+        """
+        warnings.warn(
+            "Line.build_y() is deprecated and will be removed in v3.0. "
+            "Use system.build_ybus() or Line.build_ybus() instead.",
+            DeprecationWarning, stacklevel=2,
+        )
+        return self.build_ybus()
 
     def build_b(self, method='fdpf'):
         """

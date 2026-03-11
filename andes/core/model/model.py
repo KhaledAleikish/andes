@@ -12,6 +12,7 @@ Module for ANDES models.
 
 import logging
 import pprint
+import warnings
 from collections import OrderedDict
 from textwrap import wrap
 from typing import Callable, Iterable, Union
@@ -22,17 +23,19 @@ from andes.core.block import Block
 from andes.core.common import Config, JacTriplet, ModelFlags
 from andes.core.discrete import Discrete
 from andes.core.documenter import Documenter
-from andes.core.model.modelcache import ModelCache
+from andes.core.model.modelcache import ModelCache, cache_field
 from andes.core.model.modelcall import ModelCall
+from andes.core.model.model_evaluator import ModelEvaluator
 from andes.core.param import ExtParam
+from andes.core.observable import Observable
 from andes.core.service import (ApplyFunc, BackRef, BaseService, ConstService,
                                 DeviceFinder, ExtService, FlagValue,
                                 InitChecker, NumReduce, NumRepeat, NumSelect,
                                 ParamCalc, PostInitService, RandomService,
-                                Replace, SubsService, SwBlock, VarService)
+                                Replace, SwBlock, VarService)
 from andes.core.symprocessor import SymProcessor
 from andes.core.var import Algeb, BaseVar, ExtAlgeb, ExtState, State
-from andes.shared import jac_full_names, numba
+from andes.shared import numba
 from andes.utils.func import list_flatten
 from andes.utils.tab import Tab
 
@@ -53,6 +56,27 @@ class Model:
     num_params : OrderedDict
         {name: instance} of numerical parameters, including internal and
         external ones
+
+    _setpoints : dict, optional
+        Class-level dict mapping setpoint names to model attribute names.
+        Used by ``GroupBase.set_setpoint()`` / ``get_setpoint()`` and
+        their convenience wrappers (``set_pref``, ``get_vref``, etc.)
+        to resolve which attribute to read/write.
+
+        Keys are arbitrary strings (common ones: ``'pref'``, ``'vref'``,
+        ``'qref'``).  Values must be names of attributes on the model
+        that have a ``.v`` array (typically ``ConstService`` or
+        ``PostInitService``).
+
+        The group's ``_setpoint_priority`` dict controls controller-chain
+        resolution — see ``GroupBase._resolve_setpoint`` for details.
+
+        Validated during ``System.setup()``.  A typo in the target name
+        will raise an error at load time.
+
+        Example (governor base class)::
+
+            _setpoints = {'pref': 'pref0'}
 
     Examples
     --------
@@ -169,6 +193,17 @@ class Model:
     key is the file name, and the value is the class name.
     """
 
+    _CACHE_COMBINED = {
+        'all_vars':         ('states', 'states_ext', 'algebs', 'algebs_ext'),
+        'vars_int':         ('states', 'algebs'),
+        'vars_ext':         ('states_ext', 'algebs_ext'),
+        'algebs_and_ext':   ('algebs', 'algebs_ext'),
+        'states_and_ext':   ('states', 'states_ext'),
+        'services_and_ext': ('services', 'services_ext'),
+        'all_params':       ('num_params', 'services', 'services_ext',
+                             'services_ops', 'observables', 'discrete'),
+    }
+
     def __init__(self, system=None, config=None):
         self.system = system
 
@@ -204,7 +239,7 @@ class Model:
         self.services_var_seq = OrderedDict()
         self.services_var_nonseq = OrderedDict()
         self.services_post = OrderedDict()  # post-initialization storage services
-        self.services_subs = OrderedDict()  # to-be-substituted services
+        self.observables = OrderedDict()  # observable variables (substituted + recorded)
         self.services_icheck = OrderedDict()  # post-initialization check services
         self.services_ref = OrderedDict()  # BackRef
         self.services_fnd = OrderedDict()  # services to find/add devices
@@ -249,25 +284,11 @@ class Model:
         self.syms = SymProcessor(self)  # symbolic processor instance
         self.docum = Documenter(self)  # documenter instance
 
-        # cached class attributes
-        self.cache.add_callback('all_vars', self._all_vars)
-        self.cache.add_callback('iter_vars', self._iter_vars)
-        self.cache.add_callback('input_vars', self._input_vars)
-        self.cache.add_callback('output_vars', self._output_vars)
-
-        self.cache.add_callback('all_vars_names', self._all_vars_names)
-        self.cache.add_callback('all_params', self._all_params)
-        self.cache.add_callback('all_params_names', self._all_params_names)
-        self.cache.add_callback('algebs_and_ext', self._algebs_and_ext)
-        self.cache.add_callback('states_and_ext', self._states_and_ext)
-        self.cache.add_callback('services_and_ext', self._services_and_ext)
-        self.cache.add_callback('vars_ext', self._vars_ext)
-        self.cache.add_callback('vars_int', self._vars_int)
-        self.cache.add_callback('v_getters', self._v_getters)
-        self.cache.add_callback('v_adders', self._v_adders)
-        self.cache.add_callback('v_setters', self._v_setters)
-        self.cache.add_callback('e_adders', self._e_adders)
-        self.cache.add_callback('e_setters', self._e_setters)
+        # cached class attributes — combination fields from _CACHE_COMBINED,
+        # filter fields discovered from @cache_field-decorated methods
+        for name, attrs in self._CACHE_COMBINED.items():
+            self.cache.add_combined(name, self, attrs)
+        self.cache.register_fields(self)
 
         self._input = OrderedDict()  # cached dictionary of inputs
         self._input_z = OrderedDict()  # discrete flags, storage only.
@@ -276,6 +297,7 @@ class Model:
 
         self.f_args = []
         self.g_args = []  # argument value lists
+        self.b_args = []  # observable argument value lists
         self.j_args = dict()
         self.s_args = OrderedDict()
         self.ia_args = OrderedDict()
@@ -287,6 +309,29 @@ class Model:
         self.debug_equations = list()  # variable names for debugging corresponding equation
         self.non_top_level = list()  # list of non-top-level components
 
+        # effective online status: equals ``u`` by default, but may be
+        # overwritten by status propagation (parent offline → child offline).
+        # Models should use ``ue`` instead of ``u`` in equations so that
+        # turning off a parent device automatically disables its children.
+        #
+        # Implemented as an ExtParam(model='__self__') so the value is
+        # retrieved during ``link_ext_param()`` — well before any routine's
+        # ``s_update`` — and is therefore available to all models regardless
+        # of their ``flags.pflow`` / ``flags.tds`` settings.
+        self.ue = ExtParam(model='__self__', src='u',
+                           info='effective online status',
+                           tex_name='u_e',
+                           export=False,
+                           )
+
+        self._replaced = None  # bool array marking devices replaced by dynamic models
+        self.evaluator = ModelEvaluator(self)
+
+    @property
+    def _all_replaced(self):
+        """Return True if all devices in this model are replaced by dynamic models."""
+        return self._replaced is not None and np.all(self._replaced)
+
     def _register_attribute(self, key, value):
         """
         Register a pair of attributes to the model instance.
@@ -295,7 +340,9 @@ class Model:
         Subclass attributes are automatically registered based on the variable type.
         Block attributes will be exported and registered recursively.
         """
-        if isinstance(value, Algeb):
+        if isinstance(value, Observable):
+            self.observables[key] = value
+        elif isinstance(value, Algeb):
             self.algebs[key] = value
         elif isinstance(value, ExtAlgeb):
             self.algebs_ext[key] = value
@@ -318,8 +365,6 @@ class Model:
                     self.services_var_nonseq[key] = value
             elif isinstance(value, PostInitService):
                 self.services_post[key] = value
-        elif isinstance(value, SubsService):
-            self.services_subs[key] = value
         elif isinstance(value, DeviceFinder):
             self.services_fnd[key] = value
         elif isinstance(value, BackRef):
@@ -381,7 +426,7 @@ class Model:
 
         # store the variable declaration order
         if isinstance(value, BaseVar):
-            value.id = len(self._all_vars())  # NOT in use yet
+            value.id = len(self.vars_decl_order)  # NOT in use yet
             self.vars_decl_order[key] = value
 
         self._register_attribute(key, value)
@@ -475,78 +520,204 @@ class Model:
 
         return self.__dict__[src].__dict__[attr][uid]
 
-    def set(self, src, idx, attr, value):
+    # Sentinel for distinguishing "not passed" from None/0/False
+    _SENTINEL = object()
+
+    def set(self, src, idx, *args, value=_SENTINEL, attr='v', base=None):
         """
-        Set the value of an attribute of a model property.
+        Set the value of a model parameter, service, or variable.
 
-        Performs ``self.<src>.<attr>[idx] = value``. This method will not modify
-        the input values from the case file that have not been converted to the
-        system base. As a result, changes applied by this method will not affect
-        the dumped case file.
+        This method is for modifying numerical data such as inertia,
+        impedance, setpoints, etc. To change a device's online/offline
+        status, use :meth:`set_status` instead.
 
-        To alter parameters and reflect it in the case file, use :meth:`alter`
-        instead.
+        By default, ``value`` is in system base and is written directly to
+        the internal storage (``self.<src>.<attr>``). No per-unit conversion
+        is applied and the input-base record (``vin``) is not updated.
+
+        Use ``base='device'`` to provide a value in device/input base (as
+        in the case file). The value is converted to system base via
+        ``pu_coeff`` and stored in both ``vin`` (input record) and ``v``
+        (system-base working copy).
 
         Parameters
         ----------
         src : str
-            Name of the model property
+            Name of the model property (e.g. ``'M'``, ``'p0'``).
         idx : str, int, float, array-like
-            Indices of the devices
-        attr : str, optional, default='v'
-            The internal attribute of the property to get.
-            ``v`` for values, ``a`` for address, and ``e`` for equation value.
-        value : array-like
-            New values to be set
+            Device index or indices.
+        value : float or array-like
+            The value to set. Can be passed as the third positional argument
+            or as a keyword.
+        attr : str, optional
+            Attribute to write when ``base=None`` (default ``'v'``).
+            Ignored when ``base='device'``.
+        base : ``None`` or ``'device'``, optional
+            ``None`` (default): system-base direct write.
+            ``'device'``: device/input-base with per-unit conversion;
+            also updates ``vin`` for case file consistency.
 
         Returns
         -------
         bool
             True when successful.
+
+        Examples
+        --------
+        System-base write (default):
+
+        >>> ss.GENROU.set('M', 'GENROU_1', 2.0)
+
+        Device/input-base write (like the old ``alter``):
+
+        >>> ss.GENROU.set('M', 'GENROU_1', 10.0, base='device')
+
+        See Also
+        --------
+        set_status : Change device online/offline status with ``ue``
+            propagation.
         """
 
+        # ---- Parse arguments (backward compat + new style) ----
+        _VALID_ATTRS = {'v', 'a', 'e', 'vin'}
+        _S = self._SENTINEL
+
+        if len(args) == 2 and isinstance(args[0], str) and args[0] in _VALID_ATTRS:
+            # Old-style positional: set('M', 1, 'v', 10.0)
+            warnings.warn(
+                f"set(src, idx, attr, value) is deprecated. "
+                f"Use set('{src}', {idx!r}, {args[1]!r}, attr='{args[0]}') instead.",
+                FutureWarning, stacklevel=2
+            )
+            attr = args[0]
+            actual_value = args[1]
+        elif len(args) == 1 and value is _S:
+            # New-style positional: set('M', 1, 10.0)
+            actual_value = args[0]
+        elif len(args) == 0 and value is not _S:
+            # Keyword style: set('M', 1, value=10.0)
+            actual_value = value
+        elif len(args) == 0 and value is _S:
+            raise TypeError(
+                f"set() missing 'value'. "
+                f"Usage: ss.{self.class_name}.set('{src}', {idx!r}, <value>)"
+            )
+        else:
+            raise TypeError(
+                f"set() got unexpected arguments. "
+                f"Usage: ss.{self.class_name}.set(src, idx, value, *, attr='v', base=None)"
+            )
+
+        # ---- Validate base ----
+        if base is not None and base != 'device':
+            raise ValueError(
+                f"base must be None (system base) or 'device', got {base!r}"
+            )
+
         uid = self.idx2uid(idx)
+
+        # Route u.v changes through set_status for ue propagation.
+        # set_status sets u.v, recomputes ue, propagates, and invalidates PFlow.
+        if src == 'u' and attr == 'v' and self.system.is_setup:
+            warnings.warn(
+                f"Use set_status() to change device online status:\n"
+                f"  ss.{self.class_name}.set_status({idx!r}, {actual_value!r})",
+                FutureWarning, stacklevel=2
+            )
+            self.system.set_status(self.class_name, idx, actual_value)
+            return True
+
         instance = self.__dict__[src]
 
-        # Check if the destination is a list
-        if isinstance(instance.__dict__[attr], list):
-            # Use a for-loop to set values
-            if isinstance(uid, list):
-                for i, u in enumerate(uid):
-                    instance.__dict__[attr][u] = value[i]
+        if base == 'device':
+            # Device/input base: store input value in vin, convert for v
+            if hasattr(instance, 'vin') and instance.vin is not None:
+                self._write_field(instance, 'vin', uid, actual_value)
+                converted = actual_value * instance.pu_coeff[uid]
+                self._write_field(instance, 'v', uid, converted)
             else:
-                instance.__dict__[attr][uid] = value
+                # No vin (e.g. ConstService) — just set v directly
+                self._write_field(instance, 'v', uid, actual_value)
+            self._update_time_constants(instance, uid)
         else:
-            # Default behavior for numpy arrays or other types
-            instance.__dict__[attr][uid] = value
-
-        # update differential equations' time constants stored in `dae.Tf`
-
-        if attr == "v":
-            for state in self.states.values():
-                if (state.t_const is instance) and len(state.a) > 0:
-                    self.system.dae.Tf[state.a[uid]] = instance.v[uid]
-                    # convert scalar `uid` to list
-                    if isinstance(uid, (float, int, str, np.integer, np.floating)):
-                        uid = [uid]
-                    # set diagonal elements of `Teye` for each element in `uid``
-                    uid_int = state.a.tolist()
-                    for ii in uid:
-                        self.system.TDS.Teye[uid_int[ii], uid_int[ii]] = instance.v[ii]
+            # System base: write directly
+            self._write_field(instance, attr, uid, actual_value)
+            if attr == 'v':
+                self._update_time_constants(instance, uid)
 
         return True
+
+    @staticmethod
+    def _write_field(instance, field, uid, value):
+        """Write ``value`` to ``instance.<field>[uid]``, handling list vs array."""
+        target = instance.__dict__[field]
+        if isinstance(target, list):
+            if isinstance(uid, list):
+                for i, u in enumerate(uid):
+                    target[u] = value[i]
+            else:
+                target[uid] = value
+        else:
+            target[uid] = value
+
+    def _update_time_constants(self, instance, uid):
+        """Update ``dae.Tf`` and ``TDS.Teye`` when a time constant parameter changes."""
+        for state in self.states.values():
+            if (state.t_const is instance) and len(state.a) > 0:
+                self.system.dae.Tf[state.a[uid]] = instance.v[uid]
+                # convert scalar uid to list for iteration
+                uid_list = uid if isinstance(uid, list) else [uid]
+                uid_int = state.a.tolist()
+                for ii in uid_list:
+                    self.system.TDS.Teye[uid_int[ii], uid_int[ii]] = instance.v[ii]
+
+    def set_status(self, idx, value):
+        """
+        Set the online status of a device and propagate to dependents.
+
+        Parameters
+        ----------
+        idx : str, int, float
+            Device idx.
+        value : int or float
+            New status value (0 or 1).
+        """
+        return self.system.set_status(self.class_name, idx, value)
+
+    def get_status(self, idx=None):
+        """
+        Get the effective online status of a device or all devices.
+
+        When ``idx`` is ``None``, returns the full ``ue.v`` array for
+        all devices. Otherwise, returns the scalar status for the
+        given device.
+
+        Parameters
+        ----------
+        idx : str, int, float, or None
+            Device idx. If ``None``, return the status array for all
+            devices.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            Effective status value(s) (0 or 1).
+        """
+        if idx is None:
+            return self.ue.v
+        return self.system.get_status(self.class_name, idx)
 
     def alter(self, src, idx, value, attr='v'):
         """
         Alter values of input parameters or constant service.
 
-        If the method operates on an input parameter, the new data should be in
-        the same base as that in the input file. This function will convert
-        ``value`` to per unit in the system base whenever necessary.
+        .. deprecated::
+            Use :meth:`set` with ``base='device'`` instead::
 
-        The values for storing the input data, i.e., the parameter's ``vin``
-        field, will be overwritten. As a result, altered values will be
-        reflected in the dumped case file.
+                # Old
+                ss.GENROU.alter('M', idx=1, value=10.0)
+                # New
+                ss.GENROU.set('M', idx=1, value=10.0, base='device')
 
         Parameters
         ----------
@@ -558,122 +729,54 @@ class Model:
             The desired value
         attr : str
             The attribute to alter, default is 'v'.
-
-        Notes
-        -----
-        New in version 1.9.3: Added the `attr` parameter and the feature to alter
-        specific attributes. This feature is useful when you need to manipulate parameter
-        values in the system base and ensure that these changes are reflected in the
-        dumped case file.
-
-        Examples
-        --------
-        >>> import andes
-        >>> ss = andes.load(andes.get_case('5bus/pjm5bus.xlsx'), setup=True)
-        >>> ss.GENCLS.alter(src='M', idx=2, value=1, attr='v')
-        >>> ss.GENCLS.get(src='M', idx=2, attr='v')
-        3.0
-        >>> ss.GENCLS.alter(src='M', idx=2, value=1, attr='vin')
-        >>> ss.GENCLS.get(src='M', idx=2, attr='v')
-        1.0
         """
+
+        warnings.warn(
+            f"alter() is deprecated. Use set() with base='device' instead.\n"
+            f"  Old: ss.{self.class_name}.alter('{src}', {idx!r}, {value!r})\n"
+            f"  New: ss.{self.class_name}.set('{src}', {idx!r}, {value!r}, base='device')",
+            FutureWarning, stacklevel=2
+        )
 
         instance = self.__dict__[src]
 
-        if hasattr(instance, 'vin') and (instance.vin is not None):
-            uid = self.idx2uid(idx)
-            if attr == 'vin':
-                self.set(src, idx, 'vin', value / instance.pu_coeff[uid])
-                self.set(src, idx, 'v', value=value)
+        if attr == 'vin':
+            if hasattr(instance, 'vin') and (instance.vin is not None):
+                # attr='vin' legacy: value is system-base, write v directly
+                self.set(src, idx, value, attr='v')
+                # reverse-convert for vin record
+                uid = self.idx2uid(idx)
+                self._write_field(instance, 'vin', uid, value / instance.pu_coeff[uid])
             else:
-                self.set(src, idx, 'vin', value)
-                self.set(src, idx, 'v', value * instance.pu_coeff[uid])
-        elif not hasattr(instance, 'vin') and attr == 'vin':
-            logger.warning(f"{self.class_name}.{src} has no `vin` attribute, changing `v`.")
-            self.set(src, idx, 'v', value)
+                logger.warning(f"{self.class_name}.{src} has no `vin` attribute, changing `v`.")
+                self.set(src, idx, value, attr='v')
         else:
-            self.set(src, idx, attr=attr, value=value)
+            # Default attr='v': value is device-base → delegate to set(base='device')
+            self.set(src, idx, value, base='device')
 
     def get_inputs(self, refresh=False):
-        """
-        Get an OrderedDict of the inputs to the numerical function calls.
-
-        Parameters
-        ----------
-        refresh : bool
-            Refresh the values in the dictionary.
-            This is only used when the memory addresses of arrays change.
-            After initialization, all array assignments are in place.
-            To avoid overhead, refresh should not be used after initialization.
-
-        Returns
-        -------
-        OrderedDict
-            The input name and value array pairs in an OrderedDict
-
-        Notes
-        -----
-        `dae.t` is now a numpy.ndarray which has stable memory.
-        There is no need to refresh `dat_t` in this version.
-
-        """
-        if len(self._input) == 0 or refresh:
-            self.refresh_inputs()
-            self.refresh_inputs_arg()
-
-        return self._input
+        return self.evaluator.get_inputs(refresh=refresh)
 
     def refresh_inputs(self):
-        """
-        This is the helper function to refresh inputs.
+        return self.evaluator.refresh_inputs()
 
-        The functions collects object references into ``OrderedDict``
-        `self._input` and `self._input_z`.
+    def refresh_inputs_arg(self):
+        return self.evaluator.refresh_inputs_arg()
 
-        Returns
-        -------
-        None
+    def l_update_var(self, dae_t, *args, niter=None, err=None, **kwargs):
+        return self.evaluator.l_update_var(dae_t, *args, niter=niter, err=err, **kwargs)
 
-        """
-        # The order of inputs: `all_params` and then `all_vars`, finally `config`
-        # the below sequence should correspond to `self.cache.all_params_names`
-        for instance in self.num_params.values():
-            self._input[instance.name] = instance.v
+    def l_check_eq(self, init=False, niter=0, **kwargs):
+        return self.evaluator.l_check_eq(init=init, niter=niter, **kwargs)
 
-        for instance in self.services.values():
-            self._input[instance.name] = instance.v
+    def s_update(self):
+        return self.evaluator.s_update()
 
-        for instance in self.services_ext.values():
-            self._input[instance.name] = instance.v
+    def s_update_var(self):
+        return self.evaluator.s_update_var()
 
-        for instance in self.services_ops.values():
-            self._input[instance.name] = instance.v
-
-        # discrete flags
-        for instance in self.discrete.values():
-            for name, val in zip(instance.get_names(), instance.get_values()):
-                self._input[name] = val
-                self._input_z[name] = val
-
-        # append all variable values
-        for instance in self.cache.all_vars.values():
-            self._input[instance.name] = instance.v
-
-        # append config variables as arrays
-        for key, val in self.config.as_dict(refresh=True).items():
-            self._input[key] = np.array(val)
-
-        # zeros and ones
-        self._input['__zeros'] = np.zeros(self.n)
-        self._input['__ones'] = np.ones(self.n)
-        self._input['__falses'] = np.full(self.n, False)
-        self._input['__trues'] = np.full(self.n, True)
-
-        # --- below are numpy scalars ---
-        # update`dae_t` and `sys_f`, and `sys_mva`
-        self._input['sys_f'] = np.array(self.system.config.freq, dtype=float)
-        self._input['sys_mva'] = np.array(self.system.config.mva, dtype=float)
-        self._input['dae_t'] = self.system.dae.t
+    def s_update_post(self):
+        return self.evaluator.s_update_post()
 
     def mock_refresh_inputs(self):
         """
@@ -703,167 +806,6 @@ class Model:
             else:
                 raise NotImplementedError("Unkonwn input data dimension %s" % key_ndim)
 
-    def refresh_inputs_arg(self):
-        """
-        Refresh inputs for each function with individual argument list.
-        """
-        self.f_args = list()
-        self.g_args = list()
-        self.j_args = dict()
-        self.s_args = dict()
-        self.ii_args = dict()
-        self.ia_args = dict()
-        self.ij_args = dict()
-
-        self.f_args = [self._input[arg] for arg in self.calls.f_args]
-        self.g_args = [self._input[arg] for arg in self.calls.g_args]
-        self.sns_args = [self._input[arg] for arg in self.calls.sns_args]
-
-        # each value below is a dict
-        mapping = {
-            'j_args': self.j_args,
-            's_args': self.s_args,
-            'ia_args': self.ia_args,
-            'ii_args': self.ii_args,
-            'ij_args': self.ij_args,
-        }
-
-        for key, val in mapping.items():
-            source = self.calls.__dict__[key]
-            for name in source:
-                val[name] = [self._input[arg] for arg in source[name]]
-
-    def l_update_var(self, dae_t, *args, niter=None, err=None, **kwargs):
-        """
-        Call the ``check_var`` method of discrete components to update the internal status flags.
-
-        The function is variable-dependent and should be called before updating equations.
-
-        Returns
-        -------
-        None
-        """
-        for instance in self.discrete.values():
-            if instance.has_check_var:
-                instance.check_var(dae_t=dae_t, niter=niter, err=err)
-
-    def l_check_eq(self, init=False, niter=0, **kwargs):
-        """
-        Call the ``check_eq`` method of discrete components to update equation-dependent flags.
-
-        This function should be called after equation updates.
-        AntiWindup limiters use it to append pegged states to the ``x_set`` list.
-
-        Returns
-        -------
-        None
-        """
-        if init:
-            for instance in self.discrete.values():
-                if instance.has_check_eq:
-                    instance.check_eq(allow_adjust=self.config.allow_adjust,
-                                      adjust_lower=self.config.adjust_lower,
-                                      adjust_upper=self.config.adjust_upper,
-                                      niter=0
-                                      )
-        else:
-            for instance in self.discrete.values():
-                if instance.has_check_eq:
-                    instance.check_eq(niter=niter)
-
-    def s_update(self):
-        """
-        Update service equation values.
-
-        This function is only evaluated at initialization. Service values are
-        updated sequentially. The ``v`` attribute of services will be assigned
-        at a new memory address.
-        """
-        for name, instance in self.services.items():
-            if name in self.calls.s:
-                func = self.calls.s[name]
-                if callable(func):
-                    self.get_inputs(refresh=True)
-                    # NOTE:
-                    # Use new assignment due to possible size change.
-                    # Always make a copy and make the RHS a 1-d array
-                    instance.v = np.array(func(*self.s_args[name]),
-                                          dtype=instance.vtype).ravel()
-                else:
-                    instance.v = np.array(func, dtype=instance.vtype).ravel()
-
-                # convert to an array if the return of lambda function is a scalar
-                if isinstance(instance.v, (int, float)):
-                    instance.v = np.ones(self.n, dtype=instance.vtype) * instance.v
-
-                elif isinstance(instance.v, np.ndarray) and len(instance.v) == 1:
-                    instance.v = np.ones(self.n, dtype=instance.vtype) * instance.v
-
-            # --- Very Important ---
-            # the numerical call of a `ConstService` should only depend on previously
-            #   evaluated variables.
-            func = instance.v_numeric
-            if func is not None and callable(func):
-                kwargs = self.get_inputs(refresh=True)
-                instance.v = func(**kwargs).copy().astype(instance.vtype)  # performs type conv.
-
-        if self.flags.s_num is True:
-            kwargs = self.get_inputs(refresh=True)
-            self.s_numeric(**kwargs)
-
-        # Block-level `s_numeric` not supported.
-        self.get_inputs(refresh=True)
-
-    def s_update_var(self):
-        """
-        Update values of :py:class:`andes.core.service.VarService`.
-        """
-
-        if len(self.services_var):
-            kwargs = self.get_inputs()
-            # evaluate `v_str` functions for sequential VarService
-            for name, instance in self.services_var_seq.items():
-                if instance.v_str is not None:
-                    func = self.calls.s[name]
-                    if callable(func):
-                        instance.v[:] = func(*self.s_args[name])
-
-            # apply non-sequential services from ``v_str``:w
-            if callable(self.calls.sns):
-                ret = self.calls.sns(*self.sns_args)
-                for idx, instance in enumerate(self.services_var_nonseq.values()):
-                    instance.v[:] = ret[idx]
-
-            # Apply individual `v_numeric`
-            for instance in self.services_var.values():
-                if instance.v_numeric is None:
-                    continue
-                if callable(instance.v_numeric):
-                    instance.v[:] = instance.v_numeric(**kwargs)
-
-        if self.flags.sv_num is True:
-            kwargs = self.get_inputs()
-            self.s_numeric_var(**kwargs)
-
-        # Block-level `s_numeric_var` not supported.
-
-    def s_update_post(self):
-        """
-        Update post-initialization services.
-        """
-
-        kwargs = self.get_inputs()
-        if len(self.services_post):
-            for name, instance in self.services_post.items():
-                func = self.calls.s[name]
-                if callable(func):
-                    instance.v[:] = func(*self.s_args[name])
-
-            for instance in self.services_post.values():
-                func = instance.v_numeric
-                if func is not None and callable(func):
-                    instance.v[:] = func(**kwargs)
-
     def _init_wrap(self, x0, params):
         """
         A wrapper for converting the initialization equations into standard forms g(x) = 0, where x is an array.
@@ -876,89 +818,10 @@ class Model:
         return ret
 
     def store_sparse_pattern(self):
-        """
-        Store rows and columns of the non-zeros in the Jacobians for building the sparsity pattern.
-
-        This function converts the internal 0-indexed equation/variable address to the numerical addresses for
-        the loaded system.
-
-        Calling sequence:
-        For each Jacobian name, `fx`, `fy`, `gx` and `gy`, store by
-        a) generated constant and variable Jacobians
-        c) user-provided constant and variable Jacobians,
-        d) user-provided block constant and variable Jacobians
-
-        Notes
-        -----
-        If `self.n == 0`, skipping this function will avoid appending empty lists/arrays and
-        non-empty values, which, as a combination, is not accepted by `kvxopt.spmatrix`.
-        """
-
-        self.triplets.clear_ijv()
-        if self.n == 0:  # do not check `self.in_use` here
-            return
-
-        if self.flags.address is False:
-            return
-
-        # store model-level user-defined Jacobians
-        if self.flags.j_num is True:
-            self.j_numeric()
-
-        # store and merge user-defined Jacobians in blocks
-        for instance in self.blocks.values():
-            if instance.flags.j_num is True:
-                instance.j_numeric()
-                self.triplets.merge(instance.triplets)
-
-        # for all combinations of Jacobian names (fx, fxc, gx, gxc, etc.)
-        for j_name in jac_full_names:
-            for idx, val in enumerate(self.calls.vjac[j_name]):
-
-                row_name, col_name = self._jac_eq_var_name(j_name, idx)
-                row_idx = self.__dict__[row_name].a
-                col_idx = self.__dict__[col_name].a
-
-                if len(row_idx) != len(col_idx):
-                    logger.error(f'row {row_name}, row_idx: {row_idx}')
-                    logger.error(f'col {col_name}, col_idx: {col_idx}')
-                    raise ValueError(f'{self.class_name}: non-matching row_idx and col_idx')
-
-                # Note:
-                # n_elem: number of elements in the equation or variable
-                # It does not necessarily equal to the number of devices of the model
-                # For example, `COI.omega_sub.n` depends on the number of generators linked to the COI
-                # and is likely different from `COI.n`
-
-                n_elem = self.__dict__[row_name].n
-
-                if j_name[-1] == 'c':
-                    value = val * np.ones(n_elem)
-                else:
-                    value = np.zeros(n_elem)
-
-                self.triplets.append_ijv(j_name, row_idx, col_idx, value)
+        return self.evaluator.store_sparse_pattern()
 
     def _jac_eq_var_name(self, j_name, idx):
-        """
-        Get the equation and variable name for a Jacobian type based on the absolute index.
-        """
-        var_names_list = list(self.cache.all_vars.keys())
-
-        eq_names = {'f': var_names_list[:len(self.cache.states_and_ext)],
-                    'g': var_names_list[len(self.cache.states_and_ext):]}
-
-        row = self.calls.ijac[j_name][idx]
-        col = self.calls.jjac[j_name][idx]
-
-        try:
-            row_name = eq_names[j_name[0]][row]  # where jname[0] is the equation name in ("f", "g")
-            col_name = var_names_list[col]
-        except IndexError as e:
-            logger.error("Generated code outdated. Run `andes prepare -i` to re-generate.")
-            raise e
-
-        return row_name, col_name
+        return self.evaluator._jac_eq_var_name(j_name=j_name, idx=idx)
 
     def get_init_order(self):
         """
@@ -971,77 +834,16 @@ class Model:
         logger.info(f'Initialization order: \n{", ".join(out)}')
 
     def f_update(self):
-        """
-        Evaluate differential equations.
-
-        Notes
-        -----
-        In-place equations: added to the corresponding DAE array.
-        Non-in-place equations: in-place set to internal array to
-        overwrite old values (and avoid clearing).
-        """
-        if callable(self.calls.f):
-            f_ret = self.calls.f(*self.f_args)
-            for i, var in enumerate(self.cache.states_and_ext.values()):
-                if var.e_inplace:
-                    var.e += f_ret[i]
-                else:
-                    var.e[:] = f_ret[i]
-
-        kwargs = self.get_inputs()
-        # user-defined numerical calls defined in the model
-        if self.flags.f_num is True:
-            self.f_numeric(**kwargs)
-
-        # user-defined numerical calls in blocks
-        for instance in self.blocks.values():
-            if instance.flags.f_num is True:
-                instance.f_numeric(**kwargs)
+        return self.evaluator.f_update()
 
     def g_update(self):
-        """
-        Evaluate algebraic equations.
-        """
-        if callable(self.calls.g):
-            g_ret = self.calls.g(*self.g_args)
-            for i, var in enumerate(self.cache.algebs_and_ext.values()):
-                if var.e_inplace:
-                    var.e += g_ret[i]
-                else:
-                    var.e[:] = g_ret[i]
+        return self.evaluator.g_update()
 
-        kwargs = self.get_inputs()
-        # numerical calls defined in the model
-        if self.flags.g_num is True:
-            self.g_numeric(**kwargs)
-
-        # numerical calls in blocks
-        for instance in self.blocks.values():
-            if instance.flags.g_num is True:
-                instance.g_numeric(**kwargs)
+    def b_update(self):
+        return self.evaluator.b_update()
 
     def j_update(self):
-        """
-        Update Jacobian elements.
-
-        Values are stored to ``Model.triplets[jname]``, where ``jname`` is a jacobian name.
-
-        Returns
-        -------
-        None
-        """
-        for jname, jfunc in self.calls.j.items():
-            ret = jfunc(*self.j_args[jname])
-
-            for idx, fun in enumerate(self.calls.vjac[jname]):
-                try:
-                    self.triplets.vjac[jname][idx][:] = ret[idx]
-                except (ValueError, IndexError, FloatingPointError) as e:
-                    row_name, col_name = self._jac_eq_var_name(jname, idx)
-                    logger.error('%s: error calculating or storing Jacobian <%s>: j_idx=%s, d%s / d%s',
-                                 self.class_name, jname, idx, row_name, col_name)
-
-                    raise e
+        return self.evaluator.j_update()
 
     def get_times(self):
         """
@@ -1088,76 +890,32 @@ class Model:
         """
         return self.__class__.__name__
 
-    def _all_vars(self):
-        """
-        An OrderedDict of States, ExtStates, Algebs, ExtAlgebs
-        """
-        return OrderedDict(list(self.states.items()) +
-                           list(self.states_ext.items()) +
-                           list(self.algebs.items()) +
-                           list(self.algebs_ext.items())
-                           )
-
+    @cache_field
     def _iter_vars(self):
-        """
-        Variables to be iteratively initialized
-        """
-        all_vars = OrderedDict(self.cache.all_vars)
-        for name, instance in self.cache.all_vars.items():
-            if not instance.v_iter:
-                all_vars.pop(name)
-        return all_vars
+        """Variables to be iteratively initialized."""
+        return OrderedDict((n, v) for n, v in self.cache.all_vars.items()
+                           if v.v_iter)
 
+    @cache_field
     def _all_vars_names(self):
         out = []
         for instance in self.cache.all_vars.values():
             out += instance.get_names()
         return out
 
-    def _all_params(self):
-        # the service stuff should not be moved to variables.
-        return OrderedDict(list(self.num_params.items()) +
-                           list(self.services.items()) +
-                           list(self.services_ext.items()) +
-                           list(self.services_ops.items()) +
-                           list(self.services_subs.items()) +
-                           list(self.discrete.items())
-                           )
-
+    @cache_field
     def _all_params_names(self):
         out = []
         for instance in self.cache.all_params.values():
             out += instance.get_names()
         return out
 
-    def _algebs_and_ext(self):
-        return OrderedDict(list(self.algebs.items()) +
-                           list(self.algebs_ext.items()))
-
-    def _states_and_ext(self):
-        return OrderedDict(list(self.states.items()) +
-                           list(self.states_ext.items()))
-
-    def _services_and_ext(self):
-        return OrderedDict(list(self.services.items()) +
-                           list(self.services_ext.items()))
-
-    def _vars_ext(self):
-        return OrderedDict(list(self.states_ext.items()) +
-                           list(self.algebs_ext.items()))
-
-    def _vars_int(self):
-        return OrderedDict(list(self.states.items()) +
-                           list(self.algebs.items()))
-
+    @cache_field
     def _v_getters(self):
-        out = OrderedDict()
-        for name, var in self.cache.all_vars.items():
-            if var.v_inplace:
-                continue
-            out[name] = var
-        return out
+        return OrderedDict((n, v) for n, v in self.cache.all_vars.items()
+                           if not v.v_inplace)
 
+    @cache_field
     def _v_adders(self):
         out = OrderedDict()
         for name, var in self.cache.all_vars.items():
@@ -1167,10 +925,10 @@ class Model:
                 continue
             if var.v_setter is True:
                 continue
-
             out[name] = var
         return out
 
+    @cache_field
     def _v_setters(self):
         out = OrderedDict()
         for name, var in self.cache.all_vars.items():
@@ -1180,10 +938,10 @@ class Model:
                 continue
             if var.v_setter is False:
                 continue
-
             out[name] = var
         return out
 
+    @cache_field
     def _e_adders(self):
         out = OrderedDict()
         for name, var in self.cache.all_vars.items():
@@ -1193,10 +951,10 @@ class Model:
                 continue
             if var.e_setter is True:
                 continue
-
             out[name] = var
         return out
 
+    @cache_field
     def _e_setters(self):
         out = OrderedDict()
         for name, var in self.cache.all_vars.items():
@@ -1206,23 +964,16 @@ class Model:
                 continue
             if var.e_setter is False:
                 continue
-
             out[name] = var
         return out
 
+    @cache_field
     def _input_vars(self):
-        out = list()
-        for name, var in self.cache.all_vars.items():
-            if var.is_input:
-                out.append(name)
-        return out
+        return [n for n, v in self.cache.all_vars.items() if v.is_input]
 
+    @cache_field
     def _output_vars(self):
-        out = list()
-        for name, var in self.cache.all_vars.items():
-            if var.is_output:
-                out.append(name)
-        return out
+        return [n for n, v in self.cache.all_vars.items() if v.is_output]
 
     def set_in_use(self):
         """
@@ -1265,14 +1016,50 @@ class Model:
         self.flags.address = False
         self.flags.initialized = False
 
+    def snapshot_init(self):
+        """
+        Save model-level mutable state at t=0 for :meth:`restore_init`.
+
+        Captures:
+
+        - ``_uv_t0``: tuple of ``(u.v, ue.v)`` copies — device on/off status
+        - Each ``ConstService._v_t0``: service value at t=0
+        - Each ``NumParam._v_t0``: parameter value at t=0 (post-pu)
+
+        Called by ``TDS.init()`` after initialization is complete.
+        """
+        self._uv_t0 = (self.u.v.copy(), self.ue.v.copy())
+
+        for s in self.services.values():
+            s.snapshot_init()
+        for s in self.services_post.values():
+            s.snapshot_init()
+        for p in self.num_params.values():
+            p.snapshot_init()
+
+    def restore_init(self):
+        """
+        Restore model-level mutable state from :meth:`snapshot_init`.
+
+        Restores ``u.v``, ``ue.v``, all ConstService values, and all
+        NumParam values to their t=0 baseline.
+
+        Called by ``TDS.reinit()`` before re-deriving dependent state.
+        """
+        if hasattr(self, '_uv_t0'):
+            uv, uev = self._uv_t0
+            self.u.v[:] = uv
+            self.ue.v[:] = uev
+
+        for s in self.services.values():
+            s.restore_init()
+        for s in self.services_post.values():
+            s.restore_init()
+        for p in self.num_params.values():
+            p.restore_init()
+
     def e_clear(self):
-        """
-        Clear equation value arrays associated with all internal variables.
-        """
-        for instance in self.cache.all_vars.values():
-            if instance.e_inplace:
-                continue
-            instance.e[:] = 0
+        return self.evaluator.e_clear()
 
     def v_numeric(self, **kwargs):
         """
@@ -1306,12 +1093,29 @@ class Model:
         """
         pass
 
+    def j_setup(self, **kwargs):
+        """
+        One-time Jacobian sparsity pattern and constant value setup.
+
+        Called once by ``store_sparse_pattern`` during system setup.
+        Use ``triplets.append_ijv`` with the ``'c'`` suffix (e.g., ``'gyc'``)
+        for constant Jacobians that are baked into ``dae.tpl``, or without
+        the suffix (e.g., ``'gy'``) for variable entries whose values will
+        be updated per iteration by ``j_numeric``.
+
+        Requires ``flags.j_setup = True``.
+        """
+        pass
+
     def j_numeric(self, **kwargs):
         """
-        Custom numeric update functions.
+        Per-iteration numerical Jacobian update.
 
-        This function should append indices to `_ifx`, `_jfx`, and append anonymous functions to `_vfx`.
-        It is only called once by `store_sparse_pattern`.
+        Called every Newton iteration by ``j_update``, parallel to
+        ``g_numeric`` / ``f_numeric``.  Update variable Jacobian triplet
+        values **in-place** (the mutable arrays registered by ``j_setup``).
+
+        Requires ``flags.j_num = True``.
         """
         pass
 
@@ -1332,6 +1136,7 @@ class Model:
 
         self.syms.generate_symbols()
         self.syms.generate_subs_expr()
+        self.syms.generate_observables()
         self.syms.generate_equations()
         self.syms.generate_services()
         self.syms.generate_jacobians()
@@ -1397,10 +1202,10 @@ class Model:
         Convert equation residual calls, Jacobian calls, and variable service
         calls into JIT compiled functions.
 
-        This function can be enabled by setting ``System.config.numba = 1``.
+        This function can be enabled by setting ``System.runtime.numba = 1``.
         """
 
-        if self.system.config.numba != 1:
+        if self.system.runtime.numba != 1:
             return
 
         if self.flags.jited is True:
@@ -1462,10 +1267,14 @@ class Model:
         """
         Numerical initialization of a model.
 
-        Initialization sequence:
-        1. Sequential initialization based on the order of definition
-        2. Use Newton-Krylov method for iterative initialization
-        3. Custom init
+        Uses a two-pass strategy:
+
+        - **Pass 1** (unconstrained): compute ``v_str`` assignments and
+          iterative solves with all discrete flags at their defaults
+          (zi=1 = unconstrained).  This gives limiters correct input values.
+        - **Pass 2** (constrained): replay the same sequence but evaluate
+          discrete components first, so limiter flags are set from pass-1
+          values before recomputing.
         """
 
         # evaluate `ConstService` and `VarService`
@@ -1491,102 +1300,25 @@ class Model:
             logger.debug('Initialization sequence:')
             seq_str = ' -> '.join([str(i) for i in self.calls.init_seq])
             logger.debug('\n'.join(wrap(seq_str, 70)))
-            logger.debug("%s: assignment initialization phase begins", self.class_name)
 
-            for idx, name in enumerate(self.calls.init_seq):
-                debug_flag = sys_debug or (name in self.debug_equations)
+            # ---- Pass 1: Unconstrained (no discrete evaluation) ----
+            logger.debug("%s: Pass 1 — unconstrained", self.class_name)
+            self._run_init_pass(kwargs, sys_debug, eval_discrete=False)
 
-                # single variable - do assignment
-                if isinstance(name, str):
-                    _log_init_debug(debug_flag,
-                                    "%s: entering <%s> assignment init",
-                                    self.class_name, name)
+            # Save unconstrained values so limiters can report what was clamped
+            for d in self.discrete.values():
+                d.save_unconstrained()
 
-                    instance = self.__dict__[name]
-                    if instance.discrete is not None:
-                        _log_init_debug(debug_flag, "%s: evaluate discrete <%s>", name, instance.discrete)
-                        _eval_discrete(instance, self.config.allow_adjust,
-                                       self.config.adjust_lower, self.config.adjust_upper)
+            # Pre-evaluate discrete flags so they are up-to-date before
+            # Pass 2 re-initializes variables.  Without this, a variable
+            # whose inlined expression uses another discrete's flags (e.g.
+            # Iqout_x using HVG_lim_zi) may see stale default flags if
+            # the owning Observable is later in init_seq.
+            self._pre_eval_discrete()
 
-                    if instance.v_str is not None:
-                        arg_print = OrderedDict()
-                        if debug_flag:
-                            for a, b in zip(self.calls.ia_args[name], self.ia_args[name]):
-                                arg_print[a] = b
-
-                        if not instance.v_str_add:
-                            # assignment is for most variable initialization
-                            _log_init_debug(debug_flag, "%s: new values will be assigned (=)", name)
-                            instance.v[:] = self.calls.ia[name](*self.ia_args[name])
-
-                        else:
-                            # in-place add initial values.
-                            # Voltage compensators can set part of the `v` of exciters.
-                            # Exciters will then set the bus voltage part.
-                            _log_init_debug(debug_flag, "%s: new values will be in-place added (+=)", name)
-                            instance.v[:] += self.calls.ia[name](*self.ia_args[name])
-
-                        arg_print[name] = instance.v
-
-                        if debug_flag:
-                            for key, val in arg_print.items():
-                                if isinstance(val, (int, float, np.floating, np.integer)) or \
-                                        isinstance(val, np.ndarray) and val.ndim == 0:
-
-                                    arg_print[key] = val * np.ones_like(instance.v)
-                                if isinstance(val, np.ndarray) and val.dtype == complex:
-                                    arg_print[key] = [str(i) for i in val]
-
-                            tab = Tab(title="v_str of %s is '%s'" % (name, instance.v_str),
-                                      header=["idx", *self.calls.ia_args[name], name],
-                                      data=list(zip(self.idx.v, *arg_print.values())),
-                                      )
-                            _log_init_debug(debug_flag, tab.draw())
-
-                    # single variable iterative solution
-                    if name in self.calls.ii:
-                        _log_init_debug(debug_flag,
-                                        "\n%s: entering <%s> iterative init",
-                                        self.class_name,
-                                        pprint.pformat(name))
-
-                        self.solve_iter(name, kwargs)
-
-                        _log_init_debug(debug_flag,
-                                        "%s new values are %s", name, self.__dict__[name].v)
-
-                # multiple variables, iterative
-                else:
-                    _log_init_debug(debug_flag, "\n%s: entering <%s> iterative init",
-                                    self.class_name, name)
-
-                    for vv in name:
-                        instance = self.__dict__[vv]
-
-                        if instance.discrete is not None:
-                            _log_init_debug(debug_flag, "%s: evaluate discrete <%s>",
-                                            name, instance.discrete)
-
-                            _eval_discrete(instance, self.config.allow_adjust,
-                                           self.config.adjust_lower, self.config.adjust_upper)
-                        if instance.v_str is not None:
-                            _log_init_debug(debug_flag, "%s: v_str = %s", vv, instance.v_str)
-
-                            arg_print = OrderedDict()
-                            if debug_flag:
-                                for a, b in zip(self.calls.ia_args[vv], self.ia_args[vv]):
-                                    arg_print[a] = b
-                                _log_init_debug(debug_flag, pprint.pformat(arg_print))
-
-                            instance.v[:] = self.calls.ia[vv](*self.ia_args[vv])
-
-                    _log_init_debug(debug_flag, "\n%s: entering <%s> iterative init", self.class_name,
-                                    pprint.pformat(name))
-                    self.solve_iter(name, kwargs)
-
-                    for vv in name:
-                        instance = self.__dict__[vv]
-                        _log_init_debug(debug_flag, "%s new values are %s", vv, instance.v)
+            # ---- Pass 2: Constrained (with discrete evaluation) ----
+            logger.debug("%s: Pass 2 — with discrete evaluation", self.class_name)
+            self._run_init_pass(kwargs, sys_debug, eval_discrete=True)
 
             # call custom variable initializer after generated init
             kwargs = self.get_inputs(refresh=True)
@@ -1596,6 +1328,133 @@ class Model:
         self.post_init_check()
 
         self.flags.initialized = True
+
+    def _pre_eval_discrete(self):
+        """
+        Pre-evaluate discrete flags using Pass 1 values.
+
+        Only sets flags (``is_init=False``); Pass 2 handles limit adjustment.
+        """
+        for name in self.calls.init_seq:
+            names = (name,) if isinstance(name, str) else name
+            for n in names:
+                inst = self.__dict__[n]
+                if inst.discrete is None:
+                    continue
+                dlist = inst.discrete if isinstance(
+                    inst.discrete, (list, tuple, set)) else (inst.discrete,)
+                for d in dlist:
+                    d.check_var()
+
+    def _run_init_pass(self, kwargs, sys_debug, eval_discrete=False):
+        """
+        Execute one pass of the initialization sequence.
+
+        Parameters
+        ----------
+        kwargs : dict
+            Model inputs from ``get_inputs()``.
+        sys_debug : bool
+            System-level debug flag (``--init`` CLI option).
+        eval_discrete : bool
+            If True, evaluate discrete components before each variable's
+            computation.  Pass 1 uses False (defaults drive), pass 2 uses True.
+        """
+
+        for name in self.calls.init_seq:
+            # --- Single variable ---
+            if isinstance(name, str):
+                instance = self.__dict__[name]
+                debug_flag = sys_debug or (name in self.debug_equations)
+
+                # Evaluate discrete if requested
+                if eval_discrete and instance.discrete is not None:
+                    _log_init_debug(debug_flag, "%s: evaluate discrete <%s>",
+                                    name, instance.discrete)
+                    _eval_discrete(instance, self.config.allow_adjust,
+                                   self.config.adjust_lower, self.config.adjust_upper)
+
+                # Observable: compute from e_str assignment
+                if name in self.observables:
+                    if name in self.calls.ia:
+                        instance.v[:] = self.calls.ia[name](*self.ia_args[name])
+                        _log_init_debug(debug_flag,
+                                        "%s: Observable %s = %s",
+                                        self.class_name, name, instance.v)
+                    continue
+
+                # v_str assignment
+                if instance.v_str is not None and name in self.calls.ia:
+                    arg_print = OrderedDict()
+                    if debug_flag:
+                        for a, b in zip(self.calls.ia_args[name], self.ia_args[name]):
+                            arg_print[a] = b
+
+                    if not instance.v_str_add:
+                        _log_init_debug(debug_flag, "%s: assign (=)", name)
+                        instance.v[:] = self.calls.ia[name](*self.ia_args[name])
+                    else:
+                        _log_init_debug(debug_flag, "%s: reset-and-add (+=)", name)
+                        instance.v[:] = 0
+                        instance.v[:] += self.calls.ia[name](*self.ia_args[name])
+
+                    arg_print[name] = instance.v
+
+                    if debug_flag:
+                        for key, val in arg_print.items():
+                            if isinstance(val, (int, float, np.floating, np.integer)) or \
+                                    isinstance(val, np.ndarray) and val.ndim == 0:
+                                arg_print[key] = val * np.ones_like(instance.v)
+                            if isinstance(val, np.ndarray) and val.dtype == complex:
+                                arg_print[key] = [str(i) for i in val]
+
+                        tab = Tab(title="v_str of %s is '%s'" % (name, instance.v_str),
+                                  header=["idx", *self.calls.ia_args[name], name],
+                                  data=list(zip(self.idx.v, *arg_print.values())),
+                                  )
+                        _log_init_debug(debug_flag, tab.draw())
+
+                # Iterative solve
+                if name in self.calls.ii:
+                    _log_init_debug(debug_flag,
+                                    "\n%s: entering <%s> iterative init",
+                                    self.class_name, pprint.pformat(name))
+
+                    self.solve_iter(name, kwargs)
+
+                    _log_init_debug(debug_flag,
+                                    "%s new values are %s", name, self.__dict__[name].v)
+
+            # --- Multi-variable iterative group ---
+            else:
+                debug_flag = sys_debug or (name in self.debug_equations)
+
+                for vv in name:
+                    instance = self.__dict__[vv]
+
+                    if eval_discrete and instance.discrete is not None:
+                        _eval_discrete(instance, self.config.allow_adjust,
+                                       self.config.adjust_lower, self.config.adjust_upper)
+
+                    if instance.v_str is not None and vv in self.calls.ia:
+                        _log_init_debug(debug_flag, "%s: v_str = %s", vv, instance.v_str)
+
+                        if debug_flag:
+                            arg_print = OrderedDict()
+                            for a, b in zip(self.calls.ia_args[vv], self.ia_args[vv]):
+                                arg_print[a] = b
+                            _log_init_debug(debug_flag, pprint.pformat(arg_print))
+
+                        instance.v[:] = self.calls.ia[vv](*self.ia_args[vv])
+
+                _log_init_debug(debug_flag,
+                                "\n%s: entering <%s> iterative init",
+                                self.class_name, pprint.pformat(name))
+                self.solve_iter(name, kwargs)
+
+                for vv in name:
+                    _log_init_debug(debug_flag,
+                                    "%s new values are %s", vv, self.__dict__[vv].v)
 
     def solve_iter(self, name, kwargs):
         """

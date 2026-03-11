@@ -86,7 +86,14 @@ ss.dae.t    # Current time
 
 ### Time Series
 
-After TDS, historical data is in:
+After TDS, use `get_timeseries()` to extract results as a pandas DataFrame:
+
+```python
+omega_df = ss.TDS.get_timeseries(ss.GENROU.omega)  # State variable
+voltage_df = ss.TDS.get_timeseries(ss.Bus.v)       # Algebraic variable
+```
+
+The underlying arrays are also available for direct access:
 
 ```python
 ss.dae.ts.t    # Time points
@@ -96,6 +103,28 @@ ss.dae.ts.y    # Algebraic history (n_steps x n_algebs)
 
 ```{eval-rst}
 .. autoclass:: andes.variables.dae.DAE
+    :noindex:
+```
+
+### Device Connectivity
+
+Use `find_connected()` to find all devices referencing a given bus or device:
+
+```python
+ss.find_connected('Bus', 1)
+# OrderedDict([('Slack', [1]), ('Line', ['Line_1', 'Line_2']),
+#              ('GENROU', ['GENROU_1']), ('BusFreq', ['BusFreq_2'])])
+```
+
+This works for any model or group, not just buses:
+
+```python
+ss.find_connected('SynGen', 'GENROU_1')
+# OrderedDict([('TGOV1', ['TGOV1_1']), ('ESST3A', ['ESST3A_2'])])
+```
+
+```{eval-rst}
+.. autofunction:: andes.system.System.find_connected
     :noindex:
 ```
 
@@ -318,7 +347,7 @@ Devices can be added programmatically before `setup()`:
 
 ```python
 ss = andes.load('case.xlsx', setup=False)
-ss.add('Fault', {'bus': 3, 'tf': 1.0, 'tc': 1.1})
+ss.add('Fault', bus=3, tf=1.0, tc=1.1)
 ss.setup()
 ```
 

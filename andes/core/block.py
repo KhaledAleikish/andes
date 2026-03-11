@@ -15,6 +15,7 @@ from andes.core.common import JacTriplet, ModelFlags, dummify
 from andes.core.discrete import (AntiWindup, AntiWindupRate, DeadBand,
                                  HardLimiter, LessThan, RateLimiter,)
 from andes.core.service import EventFlag
+from andes.core.observable import Observable
 from andes.core.var import Algeb, State
 
 
@@ -136,7 +137,7 @@ class Block:
         self.owner = None
         self.vars = OrderedDict()
         self.triplets = JacTriplet()
-        self.flags = ModelFlags()  # f_num, g_num and j_num can be set
+        self.flags = ModelFlags()  # f_num, g_num, j_num and j_setup can be set
 
     def __setattr__(self, key, value):
         """
@@ -176,7 +177,7 @@ class Block:
         Helper function to clear the lists holding the numerical Jacobians.
 
         This function should be only called once at the beginning of
-        ``j_numeric`` in blocks.
+        ``j_setup`` in blocks.
         """
         self.triplets.clear_ijv()
 
@@ -276,15 +277,28 @@ class Block:
         """
         pass
 
-    def j_numeric(self):
+    def j_setup(self):
         """
-        This function stores the constant and variable jacobian information in corresponding lists.
+        One-time Jacobian sparsity pattern and constant value setup.
 
-        Constant jacobians are stored by indices and values in, for example, `ifxc`, `jfxc` and `vfxc`.
-        Value scalars or arrays are stored in `vfxc`.
+        Called once by ``store_sparse_pattern`` during system setup.
+        Use ``triplets.append_ijv`` with the ``'c'`` suffix (e.g., ``'gyc'``)
+        for constant Jacobians, or without the suffix for variable entries
+        whose values will be updated per iteration by ``j_numeric``.
 
-        Variable jacobians are stored by indices and functions. The function shall return the value of the
-        corresponding jacobian elements.
+        Requires ``flags.j_setup = True``.
+        """
+        pass
+
+    def j_numeric(self, **kwargs):
+        """
+        Per-iteration numerical Jacobian update.
+
+        Called every Newton iteration by ``j_update``, parallel to
+        ``g_numeric`` / ``f_numeric``.  Update variable Jacobian triplet
+        values **in-place**.
+
+        Requires ``flags.j_num = True``.
         """
         pass
 
@@ -758,7 +772,7 @@ class PIControllerNumeric(Block):
         self.y = Algeb(info="PI output")
 
         self.vars = {'xi': self.xi, 'y': self.y}
-        self.flags.update({'f_num': True, 'g_num': True, 'j_num': True})
+        self.flags.update({'f_num': True, 'g_num': True, 'j_setup': True})
 
     def g_numeric(self, **kwargs):
         self.y.e = self.kp.v * (self.u.v - self.ref.v) + self.xi.v - self.y.v
@@ -766,7 +780,7 @@ class PIControllerNumeric(Block):
     def f_numeric(self, **kwargs):
         self.xi.e = self.ki.v * (self.u.v - self.ref.v)
 
-    def j_numeric(self):
+    def j_setup(self):
         self.j_reset()
         self.triplets.append_ijv('fyc', self.xi.id, self.u.id, self.ki.v)
         self.triplets.append_ijv('gyc', self.y.id, self.u.id, self.kp.v)
@@ -797,7 +811,7 @@ class Gain(Block):
         self.K = dummify(K)
         self.enforce_tex_name((self.K,))
 
-        self.y = Algeb(info='Gain output', tex_name='y')
+        self.y = Observable(info='Gain output', tex_name='y')
         self.vars = {'y': self.y}
 
     def define(self):
@@ -809,8 +823,7 @@ class Gain(Block):
             y^{(0)} = K u^{(0)}
 
         """
-        self.y.v_str = f'{self.K.name} * {self.u.name}'
-        self.y.e_str = f'{self.K.name} * {self.u.name} - {self.name}_y'
+        self.y.e_str = f'{self.K.name} * {self.u.name}'
 
 
 class Integrator(Block):
@@ -889,6 +902,7 @@ class IntegratorAntiWindup(Block):
         self.lim = AntiWindup(u=self.y, lower=self.lower, upper=self.upper, tex_name='lim',
                               info='Limiter in integrator', no_warn=self.no_warn,
                               )
+        self.y.discrete = self.lim
 
         self.vars = {'y': self.y, 'lim': self.lim}
 
@@ -1141,6 +1155,7 @@ class LagAntiWindup(Block):
                        t_const=self.T)
         self.lim = AntiWindup(u=self.y, lower=self.lower, upper=self.upper, tex_name='lim',
                               info='Limiter in Lag')
+        self.y.discrete = self.lim
 
         self.vars = {'y': self.y, 'lim': self.lim}
 
@@ -1338,6 +1353,7 @@ class LagAntiWindupRate(Block):
                                   tex_name='lim',
                                   info='Limiter in Lag',
                                   )
+        self.y.discrete = self.lim
 
         self.vars = {'y': self.y, 'lim': self.lim}
 
@@ -1675,9 +1691,9 @@ class LeadLagLimit(Block):
 
         self.x = State(info='State in lead-lag TF', tex_name="x'", t_const=self.T2)
         self.ynl = Algeb(info='Output of lead-lag TF before limiter', tex_name=r'y_{nl}')
-        self.y = Algeb(info='Output of lead-lag TF after limiter', tex_name=r'y',
-                       diag_eps=True)
+        self.y = Observable(info='Output of lead-lag TF after limiter', tex_name=r'y')
         self.lim = AntiWindup(u=self.ynl, lower=self.lower, upper=self.upper)
+        self.ynl.discrete = self.lim
 
         self.vars = {'x': self.x, 'ynl': self.ynl, 'y': self.y, 'lim': self.lim}
 
@@ -1698,7 +1714,6 @@ class LeadLagLimit(Block):
         """
         self.x.v_str = f'{self.u.name}'
         self.ynl.v_str = f'{self.u.name}'
-        self.y.v_str = f'{self.u.name}'
 
         self.x.e_str = f'({self.u.name} - {self.name}_x)'
         self.ynl.e_str = f'{self.T1.name} * ({self.u.name} - {self.name}_x) + ' \
@@ -1707,8 +1722,7 @@ class LeadLagLimit(Block):
 
         self.y.e_str = f'{self.name}_ynl * {self.name}_lim_zi + ' \
                        f'{self.lower.name} * {self.name}_lim_zl + ' \
-                       f'{self.upper.name} * {self.name}_lim_zu - ' \
-                       f'{self.name}_y'
+                       f'{self.upper.name} * {self.name}_lim_zu'
 
 
 class HVGate(Block):
@@ -1732,7 +1746,7 @@ class HVGate(Block):
         self.enforce_tex_name((u1, u2))
 
         self.lt = LessThan(self.u1, self.u2)
-        self.y = Algeb(info='HVGate output', tex_name='y', discrete=self.lt)
+        self.y = Observable(info='HVGate output', tex_name='y', discrete=self.lt)
         self.vars = {'y': self.y, 'lt': self.lt}
 
     def define(self):
@@ -1754,9 +1768,7 @@ class HVGate(Block):
         Not sure if this is a bug or intended.
 
         """
-        self.y.v_str = f'{self.name}_lt_z0*{self.u1.name} + {self.name}_lt_z1*{self.u2.name}'
-        self.y.e_str = f'{self.name}_lt_z0*{self.u1.name} + {self.name}_lt_z1*{self.u2.name} - ' \
-                       f'{self.name}_y'
+        self.y.e_str = f'{self.name}_lt_z0*{self.u1.name} + {self.name}_lt_z1*{self.u2.name}'
 
 
 class LVGate(Block):
@@ -1780,7 +1792,7 @@ class LVGate(Block):
         self.enforce_tex_name((u1, u2))
 
         self.lt = LessThan(self.u1, self.u2)
-        self.y = Algeb(info='LVGate output', tex_name='y', discrete=self.lt)
+        self.y = Observable(info='LVGate output', tex_name='y', discrete=self.lt)
 
         self.vars = {'y': self.y, 'lt': self.lt}
 
@@ -1798,9 +1810,7 @@ class LVGate(Block):
         Same problem as `HVGate` as `minimum` does not sympify correctly.
 
         """
-        self.y.v_str = f'{self.name}_lt_z1*{self.u1.name} + {self.name}_lt_z0*{self.u2.name}'
-        self.y.e_str = f'{self.name}_lt_z1*{self.u1.name} + {self.name}_lt_z0*{self.u2.name} - ' \
-                       f'{self.name}_y'
+        self.y.e_str = f'{self.name}_lt_z1*{self.u1.name} + {self.name}_lt_z0*{self.u2.name}'
 
 
 class GainLimiter(Block):
@@ -1829,7 +1839,7 @@ class GainLimiter(Block):
     """
 
     def __init__(self, u, K, R, lower, upper, no_lower=False, no_upper=False,
-                 sign_lower=1, sign_upper=1,
+                 sign_lower=1, sign_upper=1, allow_adjust=True,
                  name=None, tex_name=None, info=None):
         Block.__init__(self, name=name, tex_name=tex_name, info=info)
         self.u = dummify(u)
@@ -1851,9 +1861,10 @@ class GainLimiter(Block):
         self.lim = HardLimiter(u=self.x, lower=self.lower, upper=self.upper,
                                no_upper=no_upper, no_lower=no_lower,
                                sign_lower=sign_lower, sign_upper=sign_upper,
+                               allow_adjust=allow_adjust,
                                tex_name='lim')
 
-        self.y = Algeb(info='Output after limiter and post gain', tex_name='y', discrete=self.lim)
+        self.y = Observable(info='Output after limiter and post gain', tex_name='y', discrete=self.lim)
 
         self.vars = {'lim': self.lim, 'x': self.x, 'y': self.y}
 
@@ -1865,16 +1876,11 @@ class GainLimiter(Block):
         self.x.e_str = f'{self.K.name} * ({self.u.name}) - {self.name}_x'
 
         self.y.e_str = f'{self.name}_x * {self.name}_lim_zi * {self.R.name}'
-        self.y.v_str = f'{self.name}_x * {self.name}_lim_zi * {self.R.name}'
 
         if not self.no_upper:
             self.y.e_str += f' + {self.name}_lim_zu*{self.upper.name} * {self.R.name}* {self.lim.sign_upper.name}'
-            self.y.v_str += f' + {self.name}_lim_zu*{self.upper.name} * {self.R.name}* {self.lim.sign_upper.name}'
         if not self.no_lower:
             self.y.e_str += f' + {self.name}_lim_zl*{self.lower.name} * {self.R.name}* {self.lim.sign_lower.name}'
-            self.y.v_str += f' + {self.name}_lim_zl*{self.lower.name} * {self.R.name}* {self.lim.sign_lower.name}'
-
-        self.y.e_str += f' - {self.name}_y'
 
 
 class Piecewise(Block):
@@ -1890,6 +1896,14 @@ class Piecewise(Block):
     the last range (x_{n-1}, +inf) applies the last function `fun_n`.
 
     The function returns zero if no condition is met.
+
+    .. note::
+
+        Piecewise.y must remain ``Algeb`` (not ``Observable``) because:
+        (1) model authors may set ``v_iter`` on the output for coupled
+        iterative initialization (e.g., EXAC1), and (2) zero-valued
+        branches cause ``ComplexInfinity`` when the expression is
+        substituted into denominators during code generation.
 
     Parameters
     ----------
@@ -1931,6 +1945,11 @@ class Piecewise(Block):
 class DeadBand1(Block):
     """
     Deadband type 1 (linear, non-step).
+
+    .. note::
+
+        DeadBand1.y must remain ``Algeb`` (not ``Observable``) because
+        other models (e.g., DGPRCT1) reference it via ``ExtAlgeb``.
 
     Parameters
     ----------
@@ -1978,8 +1997,8 @@ class DeadBand1(Block):
             0 = center + z_u * (u - upper) + z_l * (u - lower) - y
 
         """
-        self.y.v_str = f'{self.gain.name} * ({self.center.name} + ' \
-                       f'{self.name}_db_zu * ({self.u.name} - {self.upper.name}) +' \
-                       f'{self.name}_db_zl * ({self.u.name} - {self.lower.name}))'
-
-        self.y.e_str = self.y.v_str + f' - {self.name}_y'
+        db_expr = f'{self.gain.name} * ({self.center.name} + ' \
+                  f'{self.name}_db_zu * ({self.u.name} - {self.upper.name}) +' \
+                  f'{self.name}_db_zl * ({self.u.name} - {self.lower.name}))'
+        self.y.v_str = db_expr
+        self.y.e_str = f'{db_expr} - {self.name}_y'

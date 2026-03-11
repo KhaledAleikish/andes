@@ -48,6 +48,13 @@ where $\mathbf{g}$ is the equation right-hand side.
    ExtAlgeb
    AliasState
    AliasAlgeb
+
+.. currentmodule:: andes.core.observable
+.. autosummary::
+   :recursive:
+   :toctree: _generated
+
+   Observable
 ```
 
 ## State
@@ -199,6 +206,29 @@ self.omega = State(e_str='(Tm - Te) / M')
 self.P = Algeb(e_str='Pgen - Pload')
 ```
 
+#### Device Status: `u` vs `ue`
+
+Every model has a `u` parameter (own online status, from input data) and a `ue`
+service (effective status, accounting for parent devices). Use **`ue`** in
+`e_str` to ensure equations are zeroed out when the device or any of its
+ancestors (bus, generator, exciter, etc.) is offline:
+
+```python
+# Correct: equation respects parent status
+self.omega = State(e_str='ue * (Tm - Te - D*(omega-1)) / M')
+
+# Wrong: ignores bus/parent offline status
+self.omega = State(e_str='u * (Tm - Te - D*(omega-1)) / M')
+```
+
+`ue` is computed as the product of the device's own `u` and the effective
+status of all parents declared with ``status_parent=True`` (see
+{doc}`parameters`). For example, a governor's `ue` is
+`u * generator.ue * bus.ue`.
+
+Use `u` in `v_str` for initialization, since `v_str` is evaluated before
+status propagation runs.
+
 ## Flags for Value Overwriting
 
 Variables have special flags for handling value initialization and equation values.
@@ -250,6 +280,40 @@ sets the initial value to `v0`. During the variable initialization phase for `PV
 During value collection into `DAE.y` by the `System` class, `PV.v`, as a final
 `v_setter`, will overwrite the voltage magnitude for Bus devices with the indices
 provided in `PV.bus`.
+
+## Observable
+
+Observable variables are computed by explicit assignment rather than solved in the
+DAE system. At code generation time, the expression is substituted into all
+referencing equations so that Jacobians are computed correctly. Post-solve, values
+are evaluated and stored in `dae.b` for recording.
+
+Use `Observable` instead of `Algeb` when a variable is a pure explicit function
+of other variables and does not need to participate in the Newton-Raphson solve.
+This reduces the DAE system size without sacrificing Jacobian accuracy.
+
+```python
+from andes.core.observable import Observable
+
+class MyModel(Model):
+    def __init__(self):
+        self.vd = Observable(
+            e_str='v * cos(delta - a)',
+            info='d-axis voltage',
+            tex_name='V_d',
+        )
+```
+
+:::{note}
+Observable variables cannot be referenced via `ExtAlgeb`. If another model needs
+to link to the variable externally, keep it as `Algeb`.
+:::
+
+```{eval-rst}
+.. autoclass:: andes.core.observable.Observable
+   :members:
+   :noindex:
+```
 
 ## Alias Variables
 

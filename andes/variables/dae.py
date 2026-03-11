@@ -22,13 +22,14 @@ class DAETimeSeries:
         self.dae = dae
 
         # accessible attributes
-        self._public = ['t', 'x', 'y', 'z', 'xy', 'txyz',
-                        'df_x', 'df_y', 'df_z', 'df_xy', 'df_xyz']
+        self._public = ['t', 'x', 'y', 'z', 'b', 'xy', 'txyz',
+                        'df_x', 'df_y', 'df_z', 'df_b', 'df_xy', 'df_xyz']
 
         # internal dict storage
         self._xs = OrderedDict()
         self._ys = OrderedDict()
         self._zs = OrderedDict()
+        self._bs = OrderedDict()
         self._fs = OrderedDict()
         self._hs = OrderedDict()
         self._is = OrderedDict()
@@ -60,7 +61,7 @@ class DAETimeSeries:
                 for ii, val in enumerate(self.__dict__[src].values()):
                     self.__dict__[dest][ii, :] = val
 
-        pairs = (('_xs', 'x'), ('_ys', 'y'), ('_zs', 'z'),
+        pairs = (('_xs', 'x'), ('_ys', 'y'), ('_zs', 'z'), ('_bs', 'b'),
                  ('_fs', 'f'), ('_hs', 'h'), ('_is', 'i'))
 
         for a, b in pairs:
@@ -124,6 +125,11 @@ class DAETimeSeries:
         if attr is None or 'z' in attr:
             self.df_z = pd.DataFrame.from_dict(self._zs, orient='index',
                                                columns=uzname)
+
+        ubname = self.dae.b_name
+        if attr is None or 'b' in attr:
+            self.df_b = pd.DataFrame.from_dict(self._bs, orient='index',
+                                               columns=ubname)
 
         if attr is None or attr == 'df_xy':
             self.df_xy = pd.concat((self.df_x, self.df_y), axis=1)
@@ -242,6 +248,7 @@ class DAETimeSeries:
         self._fs = OrderedDict()
         self._hs = OrderedDict()
         self._is = OrderedDict()
+        self._bs = OrderedDict()
 
         self.unpack_np(attr=None, warn_empty=False)
         self.unpack_df(attr=None)
@@ -318,13 +325,16 @@ class DAE:
             'z': 'o',  # limiter flags
             'h': 'p',  # RHS of external states
             'i': 'q',  # RHS of external algebraic variables
+            'b': 'ob',  # observable variables
         }
 
         self.m, self.n, self.o, self.p, self.q = 0, 0, 0, 0, 0
+        self.ob = 0
 
         self.x, self.y, self.z = np.array([]), np.array([]), np.array([])
         self.f, self.g = np.array([]), np.array([])  # RHS of equations
         self.h, self.i = np.array([]), np.array([])  # RHS of external equations
+        self.b = np.array([])  # observable variable values
 
         # `self.Tf` is the time-constant array for differential equations
         self.Tf = np.array([])
@@ -338,6 +348,10 @@ class DAE:
         self.z_name, self.z_tex_name = [], []
         self.h_name, self.h_tex_name = [], []
         self.i_name, self.i_tex_name = [], []
+        self.b_name, self.b_tex_name = [], []
+
+        self.x_map = {}  # x-addr → (model, var), built by set_dae_names
+        self.y_map = {}  # y-addr → (model, var), built by set_dae_names
 
         self.triplets = JacTriplet()
 
@@ -585,6 +599,9 @@ class DAE:
             z_vals = system.get_z(system.exist.pflow_tds)
             ts._zs[t] = np.array(z_vals)
 
+        if self.ob > 0:
+            ts._bs[t] = np.array(self.b)
+
         if tds.config.store_f:
             ts._fs[t] = np.array(self.f)
         if tds.config.store_h:
@@ -609,6 +626,7 @@ class DAE:
         self.x = self._extend_or_slice(self.x, self.n)
         self.y = self._extend_or_slice(self.y, self.m)
         self.z = self._extend_or_slice(self.z, self.o)
+        self.b = self._extend_or_slice(self.b, self.ob)
 
         self.f = self._extend_or_slice(self.f, self.n)
         self.g = self._extend_or_slice(self.g, self.m)
@@ -635,10 +653,12 @@ class DAE:
                  'y_name': self.m,
                  'h_name': self.p,
                  'i_name': self.q,
+                 'b_name': self.ob,
                  'x_tex_name': self.n,
                  'y_tex_name': self.m,
                  'h_tex_name': self.p,
                  'i_tex_name': self.q,
+                 'b_tex_name': self.ob,
                  }
 
         for name, size in specs.items():
@@ -650,29 +670,37 @@ class DAE:
             else:
                 raise NotImplementedError("Does not know how to shrink arrays")
 
+    @staticmethod
+    def _readonly(arr):
+        """Return a read-only view so accidental writes raise ValueError."""
+        arr.flags.writeable = False
+        return arr
+
     @property
     def xy(self):
         """
-        Return a concatenated array of [x, y].
+        Return a read-only concatenated array of [x, y].
+
+        To modify state, write ``dae.x`` and ``dae.y`` directly.
         """
 
-        return np.hstack((self.x, self.y))
+        return self._readonly(np.hstack((self.x, self.y)))
 
     @property
     def xyz(self):
         """
-        Return a concatenated array of [x, y].
+        Return a read-only concatenated array of [x, y, z].
         """
 
-        return np.hstack((self.x, self.y, self.z))
+        return self._readonly(np.hstack((self.x, self.y, self.z)))
 
     @property
     def fg(self):
         """
-        Return a concatenated array of [f, g].
+        Return a read-only concatenated array of [f, g].
         """
 
-        return np.hstack((self.f, self.g))
+        return self._readonly(np.hstack((self.f, self.g)))
 
     @property
     def x_name_output(self):

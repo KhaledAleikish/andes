@@ -13,13 +13,15 @@ class PLBVFU1Data(ModelData):
 
     def __init__(self):
         ModelData.__init__(self)
-        self.bus = IdxParam(model='Bus',
+        self.bus = IdxParam(model='ACNode',
                             info="interface bus id",
                             mandatory=True,
+                            status_parent=True,
                             )
         self.gen = IdxParam(info="static generator index",
                             model='StaticGen',
                             mandatory=True,
+                            replaces=True,
                             )
         self.Sn = NumParam(default=100.0,
                            info="Power rating",
@@ -163,7 +165,7 @@ class PLBVFU1Model(Model):
                            unit='rad',
                            v_str='delta0',
                            tex_name=r'\delta',
-                           e_str='u * (2 * pi * fn) * (omega - 1)',
+                           e_str='ue * (2 * pi * fn) * (omega - 1)',
                            )
 
         # --- Power injections are obtained by sympy ---
@@ -216,10 +218,3 @@ class PLBVFU1(PLBVFU1Model, PLBVFU1Data):
     def __init__(self, system, config):
         PLBVFU1Data.__init__(self)
         PLBVFU1Model.__init__(self, system, config)
-
-    def v_numeric(self, **kwargs):
-        """
-        Numeric initialization to disable corresponding ``StaticGen``.
-        """
-
-        self.system.groups['StaticGen'].set(src='u', idx=self.gen.v, attr='v', value=0)

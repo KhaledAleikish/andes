@@ -18,6 +18,7 @@ class TGBaseData(ModelData):
                             info='Synchronous generator idx',
                             mandatory=True,
                             unique=True,
+                            status_parent=True,
                             )
         self.Tn = NumParam(info='Turbine power rating. Equal to `Sn` if not provided.',
                            tex_name='T_n',
@@ -45,6 +46,8 @@ class TGBase(Model):
 
     """
 
+    _setpoints = {'pref': 'pref0', 'paux': 'paux0'}
+
     def __init__(self, system, config, add_sn=True, add_tm0=True):
         Model.__init__(self, system, config)
         self.group = 'TurbineGov'
@@ -57,19 +60,6 @@ class TGBase(Model):
                            unit='MVA',
                            export=False,
                            )
-        self.ug = ExtParam(src='u',
-                           model='SynGen',
-                           indexer=self.syn,
-                           tex_name='u_g',
-                           info='Generator connection status',
-                           unit='bool',
-                           export=False,
-                           )
-        self.ue = ConstService(v_str='u * ug',
-                               info="effective connection status considering generator's",
-                               tex_name='u_{e}',
-                               )
-
         if add_sn is True:
             self.Sn = NumSelect(self.Tn,
                                 fallback=self.Sg,

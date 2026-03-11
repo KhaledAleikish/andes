@@ -7,31 +7,6 @@ from andes.core import Config
 from collections import OrderedDict
 
 
-def check_conn_before_init(func):
-    """
-    A decorator that ensures the connection is active before calling the `init` or `run`
-    method of a `BaseRoutine` derived class.
-
-    This decorator calls the `act` method on `self.system.conn` to ensure the connection
-    is active before proceeding with the initialization.
-
-    Parameters
-    ----------
-    func : function
-        The `init` method of a `BaseRoutine` derived class.
-
-    Returns
-    -------
-    function
-        The wrapped function with connection check.
-    """
-
-    def wrapper(self, *args, **kwargs):
-        self.system.conn.act()
-        return func(self, *args, **kwargs)
-    return wrapper
-
-
 class BaseRoutine:
     """
     Base routine class.
@@ -42,23 +17,25 @@ class BaseRoutine:
     def __init__(self, system=None, config=None):
         self.system = system
         self.config = Config(self.class_name)
+        self.config._deprecated['sparselib'] = 'Use [Runtime] section instead.'
 
         if config is not None:
             self.config.load(config)
 
-        self.config.add(OrderedDict((('sparselib', 'klu'),
-                                     ('linsolve', 0),
+        self.config.add(OrderedDict((('linsolve', 0),
                                      )))
         self.config.add_extra("_help",
-                              sparselib="linear sparse solver name",
                               linsolve="solve symbolic factorization each step (enable when KLU segfaults)",
                               )
         self.config.add_extra("_alt",
-                              sparselib=("klu", "umfpack", "spsolve", "cupy"),
                               linsolve=(0, 1),
                               )
 
-        self.solver = Solver(sparselib=self.config.sparselib)
+        sparselib = 'klu'
+        if system is not None and hasattr(system, 'runtime'):
+            sparselib = system.runtime.sparselib
+
+        self.solver = Solver(sparselib=sparselib)
         self.exec_time = 0.0  # recorded time to execute the routine in seconds
 
     @property

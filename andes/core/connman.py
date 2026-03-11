@@ -1,160 +1,295 @@
 """
 Module for Connectivity Manager.
+
+Handles topology analysis (island detection, slack coverage checks).
+Status propagation from buses to connected devices is handled by
+the ``set_status`` / ``propagate_init_status`` framework in ``System``.
 """
 
 import logging
-from collections import OrderedDict
 
-from andes.utils.func import list_flatten
-from andes.shared import np
+from andes.utils.misc import elapsed
+from andes.shared import np, sparse, spmatrix
 
 logger = logging.getLogger(__name__)
 
 
-# connectivity dependencies of `Bus`
-# NOTE: only include PFlow models and measurements models
-# cause online status of dynamic models are expected to be handled by their
-# corresponding static models
-# TODO: DC Topologies are not included yet, `Node`, etc
-bus_deps = OrderedDict([
-    ('ACLine', ['bus1', 'bus2']),
-    ('ACShort', ['bus1', 'bus2']),
-    ('FreqMeasurement', ['bus']),
-    ('Interface', ['bus']),
-    ('Motor', ['bus']),
-    ('PhasorMeasurement', ['bus']),
-    ('StaticACDC', ['bus']),
-    ('StaticGen', ['bus']),
-    ('StaticLoad', ['bus']),
-    ('StaticShunt', ['bus']),
-])
-
-
 class ConnMan:
     """
-    Define a Connectivity Manager class for System.
+    Connectivity Manager for System.
 
-    Connectivity Manager is used to automatically **turn off**
-    attached devices when a ``Bus`` is turned off **after** system
-    setup and **before** TDS initializtion.
+    Performs topology analysis: island detection, islanded bus detection,
+    and slack generator coverage checks.
 
     Attributes
     ----------
-    system: system object
+    system : System
         System object to manage the connectivity.
-    busu0: ndarray
-        Last recorded bus connection status.
-    is_needed: bool
-        Flag to indicate if connectivity update is needed.
-    changes: dict
-        Dictionary to record bus connectivity changes ('on' and 'off').
-        'on' means the bus is previous offline and now online.
-        'off' means the bus is previous online and now offline.
     """
 
     def __init__(self, system=None):
+        self.system = system
+        self._dirty = True  # True so first check in setup() always runs
+        self._topo_version = 0  # monotonic counter, incremented on topology changes
+        self._ybus_version = 0  # monotonic counter, incremented on any Ybus change
+
+    # ------------------------------------------------------------------
+    #  Topology analysis
+    # ------------------------------------------------------------------
+
+    def check_connectivity(self, info=True):
         """
-        Initialize the connectivity manager.
+        Perform connectivity check for the system.
 
         Parameters
         ----------
-        system: system object
-            System object to manage the connectivity.
+        info : bool
+            True to log connectivity summary.
         """
-        self.system = system
-        self.busu0 = None               # placeholder for Bus.u.v
-        self.is_needed = False          # flag to indicate if check is needed
-        self.changes = {'on': None, 'off': None}    # dict of bus connectivity changes
+        t0, _ = elapsed()
+        logger.debug("Entering connectivity check.")
 
-    def init(self):
+        system = self.system
+        Bus = system.Bus
+
+        Bus.n_islanded_buses = 0
+        Bus.islanded_buses = list()
+        Bus.island_sets = list()
+        Bus.nosw_island = list()
+        Bus.msw_island = list()
+        Bus.islands = list()
+
+        n = Bus.n
+
+        fr, to, u = self._collect_edges()
+        self._find_islanded_buses(n, fr, to, u)
+        self._find_islands(n, fr, to, u)
+        self._check_slack_coverage()
+        self._post_process_islands(n)
+
+        _, s = elapsed(t0)
+
+        self._dirty = False
+
+        if info is True:
+            logger.info('Connectivity check completed in %s.', s)
+            self.summary()
+        else:
+            logger.debug('Connectivity check completed in %s.', s)
+
+    def invalidate(self):
+        """Mark topology as dirty so the next check will run.
+
+        Increments both ``_topo_version`` and ``_ybus_version`` because
+        topology changes (Line, Jumper, Fortescue) always affect Ybus.
         """
-        Initialize the connectivity.
+        self._dirty = True
+        self._topo_version += 1
+        self._ybus_version += 1
 
-        `ConnMan` is initialized in `System.setup()`, where all buses are considered online
-        by default. This method records the initial bus connectivity.
+    def invalidate_ybus(self):
+        """Signal that the bus admittance matrix changed.
+
+        Called when a non-topological but Ybus-contributing model (e.g.,
+        Shunt) changes status.  Does NOT trigger connectivity recheck.
         """
-        # NOTE: here, we expect all buses are online before the system setup
-        self.busu0 = np.ones(self.system.Bus.n, dtype=int)
-        self.changes['on'] = np.zeros(self.system.Bus.n, dtype=int)
-        self.changes['off'] = np.logical_and(self.busu0 == 1, self.system.Bus.u.v == 0).astype(int)
+        self._ybus_version += 1
 
-        if np.any(self.changes['off']):
-            self.is_needed = True
-
-        self.act()
-
-        return True
-
-    def _update(self):
+    def _collect_edges(self):
         """
-        Helper function for in-place update of bus connectivity.
+        Collect from-bus and to-bus address pairs from branch models.
+
+        Uses ``ue.v`` (effective status) so that branches on offline buses
+        are correctly excluded from topology analysis.
+
+        Returns
+        -------
+        tuple of (list, list, list)
+            (fr, to, u) where fr/to are bus address indices and u is
+            effective online status.
         """
-        self.changes['on'][...] = np.logical_and(self.busu0 == 0, self.system.Bus.u.v == 1)
-        self.changes['off'][...] = np.logical_and(self.busu0 == 1, self.system.Bus.u.v == 0)
-        self.busu0[...] = self.system.Bus.u.v
+        system = self.system
+        fr, to, u = list(), list(), list()
 
-    def record(self):
+        # TODO: generalize it to all serial devices
+        # collect from Line
+        fr.extend(system.Line.a1.a.tolist())
+        to.extend(system.Line.a2.a.tolist())
+        u.extend(system.Line.ue.v.tolist())
+
+        # collect from Jumper
+        fr.extend(system.Jumper.a1.a.tolist())
+        to.extend(system.Jumper.a2.a.tolist())
+        u.extend(system.Jumper.ue.v.tolist())
+
+        # collect from Fortescue
+        fr.extend(system.Fortescue.a.a.tolist())
+        to.extend(system.Fortescue.aa.a.tolist())
+        u.extend(system.Fortescue.ue.v.tolist())
+
+        fr.extend(system.Fortescue.a.a.tolist())
+        to.extend(system.Fortescue.ab.a.tolist())
+        u.extend(system.Fortescue.ue.v.tolist())
+
+        fr.extend(system.Fortescue.a.a.tolist())
+        to.extend(system.Fortescue.ac.a.tolist())
+        u.extend(system.Fortescue.ue.v.tolist())
+
+        return fr, to, u
+
+    def _find_islanded_buses(self, n, fr, to, u):
         """
-        Record the bus connectivity in-place.
+        Find buses with zero active connections (degree-zero nodes).
 
-        This method should be called if `Bus.set()` or `Bus.alter()` is called.
+        Sets ``Bus.islanded_buses``, ``Bus.islanded_a``,
+        ``Bus.islanded_v``, and ``Bus.n_islanded_buses``.
         """
-        self._update()
+        Bus = self.system.Bus
 
-        if np.any(self.changes['on']):
-            onbus_idx = [self.system.Bus.idx.v[i] for i in np.nonzero(self.changes["on"])[0]]
-            logger.warning(f'Bus turned on: {onbus_idx}')
-            self.is_needed = True
-            if len(onbus_idx) > 0:
-                raise NotImplementedError('Turning on bus after system setup is not supported yet!')
+        os = [0] * len(u)
 
-        if np.any(self.changes['off']):
-            offbus_idx = [self.system.Bus.idx.v[i] for i in np.nonzero(self.changes["off"])[0]]
-            logger.warning(f'Bus turned off: {offbus_idx}')
-            self.is_needed = True
+        # find islanded buses from sparse degree vector (avoid dense allocation)
+        degree_sp = sparse(spmatrix(u, to, os, (n, 1), 'd') +
+                           spmatrix(u, fr, os, (n, 1), 'd'))
+        connected = set(int(i) for i in degree_sp.I)
+        Bus.islanded_buses = [i for i in range(n) if i not in connected]
 
-        return self.changes
+        # store `a` and `v` indices for zeroing out residuals
+        Bus.islanded_a = np.array(Bus.islanded_buses)
+        Bus.islanded_v = Bus.n + Bus.islanded_a
+        Bus.n_islanded_buses = len(Bus.islanded_a)
 
-    def act(self):
+    def _find_islands(self, n, fr, to, u):
         """
-        Update the connectivity.
+        Find connected components via iterative DFS — O(n + edges).
+
+        Sets ``Bus.island_sets``.
         """
-        if not self.is_needed:
-            logger.debug('No need to update connectivity.')
-            return True
+        Bus = self.system.Bus
 
-        if self.system.TDS.initialized:
-            raise NotImplementedError('Bus connectivity update during TDS is not supported yet!')
+        adj = [[] for _ in range(n)]
+        for f, t, status in zip(fr, to, u):
+            if status != 0:
+                adj[f].append(t)
+                adj[t].append(f)
 
-        # --- action ---
-        offbus_idx = [self.system.Bus.idx.v[i] for i in np.nonzero(self.changes["off"])[0]]
+        visited = np.zeros(n, dtype=bool)
+        if Bus.n_islanded_buses > 0:
+            visited[Bus.islanded_a] = True
 
-        # skip if no bus is turned off
-        if len(offbus_idx) == 0:
-            return True
+        island_sets = []
+        for bus in range(n):
+            if visited[bus]:
+                continue
+            stack = [bus]
+            visited[bus] = True
+            component = []
+            while stack:
+                node = stack.pop()
+                component.append(node)
+                for nbr in adj[node]:
+                    if not visited[nbr]:
+                        visited[nbr] = True
+                        stack.append(nbr)
+            island_sets.append(component)
 
-        logger.warning('Entering connectivity update.')
-        logger.warning(f'Following bus(es) are turned off: {offbus_idx}')
+        Bus.island_sets = island_sets
 
-        logger.warning('-> System connectivity update results:')
-        for grp_name, src_list in bus_deps.items():
-            devices = []
-            for src in src_list:
-                grp_devs = self.system.__dict__[grp_name].find_idx(keys=src, values=offbus_idx,
-                                                                   allow_none=True, allow_all=True,
-                                                                   default=None)
-                grp_devs_flat = list_flatten(grp_devs)
-                if grp_devs_flat != [None]:
-                    devices.append(grp_devs_flat)
+    def _check_slack_coverage(self):
+        """
+        Check if each island has exactly one slack generator.
 
-            devices_flat = list_flatten(devices)
+        Uses ``ue.v`` (effective status) so that slack generators on
+        offline buses are correctly excluded.
 
-            if len(devices_flat) > 0:
-                self.system.__dict__[grp_name].set(src='u', attr='v',
-                                                   idx=devices_flat, value=0)
-                logger.warning(f'In <{grp_name}>, turn off {devices_flat}')
+        Sets ``Bus.nosw_island`` and ``Bus.msw_island``.
+        """
+        Bus = self.system.Bus
 
-        self.is_needed = False      # reset the action flag
-        self._update()              # update but not record
-        self.system.connectivity(info=True)
-        return True
+        if len(Bus.island_sets) == 0:
+            return
+
+        slack_bus_uid = Bus.idx2uid(self.system.Slack.bus.v)
+        slack_ue = self.system.Slack.ue.v
+
+        for idx, island in enumerate(Bus.island_sets):
+            island_set = set(island)
+            nosw = 1
+            for su, uid in zip(slack_ue, slack_bus_uid):
+                if (su == 1) and (uid in island_set):
+                    nosw -= 1
+            if nosw == 1:
+                Bus.nosw_island.append(idx)
+            elif nosw < 0:
+                Bus.msw_island.append(idx)
+
+    def _post_process_islands(self, n):
+        """
+        Build the unified ``Bus.islands`` list and identify the largest
+        island for generator criteria checks during TDS.
+        """
+        system = self.system
+        Bus = system.Bus
+
+        # 1. extend islanded buses, each in a list
+        if len(Bus.islanded_buses) > 0:
+            Bus.islands.extend([[item] for item in Bus.islanded_buses])
+
+        if len(Bus.island_sets) == 0:
+            Bus.islands.append(list(range(n)))
+        else:
+            Bus.islands.extend(Bus.island_sets)
+
+        # 2. find generators in the largest island
+        if system.TDS.config.criteria and system.TDS.initialized:
+            lg_island = max(Bus.islands, key=len)
+
+            lg_bus_idx = [Bus.idx.v[ii] for ii in lg_island]
+            if system.SynGen.n > 0:
+                system.SynGen.store_idx_island(lg_bus_idx)
+
+    def summary(self):
+        """
+        Print out connectivity check summary.
+        """
+        Bus = self.system.Bus
+
+        island_sets = Bus.island_sets
+        nosw_island = Bus.nosw_island
+        msw_island = Bus.msw_island
+        n_islanded_buses = Bus.n_islanded_buses
+
+        logger.info("-> System connectivity check results:")
+        if n_islanded_buses == 0:
+            logger.info("  No islanded bus detected.")
+        else:
+            logger.info("  %d islanded bus detected.", n_islanded_buses)
+            logger.debug("  Islanded Bus indices (0-based): %s", Bus.islanded_buses)
+
+        if len(island_sets) == 0:
+            logger.info("  No island detected.")
+        elif len(island_sets) == 1:
+            logger.info("  System is interconnected.")
+            logger.debug("  Bus indices in interconnected system (0-based): %s", island_sets)
+        else:
+            logger.info("  System contains %d island(s).", len(island_sets))
+            logger.debug("  Bus indices in islanded areas (0-based): %s", island_sets)
+
+        if len(nosw_island) > 0:
+            logger.warning('  Slack generator is not defined/enabled for %d island(s).',
+                           len(nosw_island))
+            logger.debug("  Bus indices in no-Slack areas (0-based): %s",
+                         [island_sets[item] for item in nosw_island])
+
+        if len(msw_island) > 0:
+            # collect Slack count and bus info for the warning message
+            slack = self.system.Slack
+            enabled_buses = [int(b) for b, u in zip(slack.bus.v, slack.ue.v) if u > 0]
+            unique_buses = sorted(set(enabled_buses))
+            logger.warning('  %d slack generators are enabled on %d bus(es): %s.',
+                           len(enabled_buses), len(unique_buses), unique_buses)
+            logger.debug("  Bus indices in multiple-Slack areas (0-based): %s",
+                         [island_sets[item] for item in msw_island])
+
+        if len(nosw_island) == 0 and len(msw_island) == 0:
+            logger.info('  Each island has a slack bus correctly defined and enabled.')

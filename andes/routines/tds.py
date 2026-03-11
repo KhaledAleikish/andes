@@ -9,10 +9,11 @@ import sys
 import time
 from collections import OrderedDict
 
-from andes.routines.base import BaseRoutine, check_conn_before_init
+from andes.routines.base import BaseRoutine
 from andes.routines.daeint import Trapezoid, method_map
+from andes.routines.qndf import QNDFCache
 from andes.routines.criteria import deltadelta
-from andes.shared import get_tqdm, matrix, np, pd, spdiag, tqdm
+from andes.shared import get_tqdm, matrix, np, pd, spdiag, tqdm_nb
 from andes.utils.misc import elapsed, is_interactive, is_notebook
 from andes.utils.tab import Tab
 
@@ -58,14 +59,22 @@ class TDS(BaseRoutine):
                                      ('save_mode', 'auto'),
                                      ('no_tqdm', 0),
                                      ('chatter_iter', 4),
+                                     ('linesearch', 1),
+                                     ('dtmax', 0),
+                                     ('dtmin_adapt', 0),
+                                     ('abstol', 1e-6),
+                                     ('reltol', 1e-3),
                                      )))
         self.config.add_extra("_help",
-                              method='DAE solution method',
+                              method='DAE solution method: "trapezoid" and "backeuler" use '
+                                     'niter-based step heuristic; "trap_adapt" and "qndf" use '
+                                     'internal LTE error control (requires fixt=0)',
                               tol="convergence tolerance",
                               t0="simulation starting time",
                               tf="simulation ending time",
-                              fixt="use fixed step size (1) or variable (0)",
-                              shrinkt='shrink step size for fixed method if not converged',
+                              fixt='use fixed step size (1) or variable (0); '
+                                   'adaptive methods (trap_adapt, qndf) override to 0',
+                              shrinkt='allow step shrinking on non-convergence when fixt=1',
                               honest='honest Newton method that updates Jac at each step',
                               tstep='integration step size',
                               max_iter='maximum number of iterations',
@@ -88,6 +97,11 @@ class TDS(BaseRoutine):
                               save_mode='automatically or manually save output data when done',
                               no_tqdm='disable tqdm progressbar',
                               chatter_iter='minimum iterations to detect chattering',
+                              linesearch='nonmonotone backtracking line search',
+                              dtmax='maximum step size (0 = auto from freq and tspan)',
+                              dtmin_adapt='minimum step size for adaptive methods (0 = auto)',
+                              abstol='absolute tolerance for adaptive LTE estimation',
+                              reltol='relative tolerance for adaptive LTE estimation',
                               )
         self.config.add_extra("_alt",
                               method=tuple(method_map.keys()),
@@ -117,6 +131,11 @@ class TDS(BaseRoutine):
                               save_mode=('auto', 'manual'),
                               no_tqdm=(0, 1),
                               chatter_iter='int>=4',
+                              linesearch=(0, 1),
+                              dtmax='>=0',
+                              dtmin_adapt='>=0',
+                              abstol='float',
+                              reltol='float',
                               )
 
         # overwrite `tf` from command line
@@ -135,6 +154,7 @@ class TDS(BaseRoutine):
         # to be computed
         self.deltat = 0
         self.deltatmin = 0
+        self.deltatmin_adapt = 0
         self.deltatmax = 0
         self.h = 0
         self.last_pc = 0.0
@@ -152,6 +172,7 @@ class TDS(BaseRoutine):
         self._switch_idx = 0          # index into `System.switch_times`
         self._last_switch_t = -999    # the last critical time
         self.custom_event = False
+        self._adaptive_nolte_steps = 0
         self.mis = [1, 1]
         self.pbar = None
         self.callpert = None
@@ -167,14 +188,16 @@ class TDS(BaseRoutine):
         self.x0 = None
         self.y0 = None
         self.f0 = None
+        self.xs = None
+        self.ys = None
         self.Ac = None
         self.inc = None
+        self.qndf_cache = None
 
         # set DAE solver
         self.method = Trapezoid()
         self.set_method(self.config.method)
 
-    @check_conn_before_init
     def init(self):
         """
         Initialize the status, storage and values for TDS.
@@ -193,6 +216,7 @@ class TDS(BaseRoutine):
             return system.dae.xy
 
         self.reset()
+        self.set_method(self.config.method)
         self._load_pert()
 
         # restore power flow solutions
@@ -206,16 +230,27 @@ class TDS(BaseRoutine):
         system.set_address(models=system.exist.pflow_tds)
         system.set_dae_names(models=system.exist.tds)
         system.set_output_subidx(models=system.exist.pflow_tds)
-
-        system.dae.clear_ts()
-        system.store_sparse_pattern(models=system.exist.pflow_tds)
-        system.store_adder_setter(models=system.exist.pflow_tds)
         system.store_no_check_init(models=system.exist.pflow_tds)
+
+        # lightweight setup for init(): only _getters/_setters for vars_to_models
+        system.store_getters(models=system.exist.pflow_tds)
         system.vars_to_models()
 
         system.init(system.exist.tds, routine='tds')
 
+        system.dae_compactor.compact_dae()
+
+        # propagate after compact_dae so that ue reflects replacement u=0
+        system.propagate_init_status()
+
+        # full setup after compaction (sparse patterns, adders, antiwindups)
+        system.dae.clear_ts()
+        system.store_sparse_pattern(models=system.exist.pflow_tds)
+        system.store_adder_setter(models=system.exist.pflow_tds)
+        system.vars_to_models()
+
         self.fg_update(system.exist.tds, init=True)
+        system.b_update(system.exist.pflow_tds)
 
         # reset diff. equation RHS for binding antiwindups
         for item in system.antiwindups:
@@ -230,7 +265,19 @@ class TDS(BaseRoutine):
         self.Teye = spdiag(system.dae.Tf.tolist())
         self.qg = np.zeros(system.dae.n + system.dae.m)
 
+        if self.qndf_cache is None and self.config.method == 'qndf':
+            if system.dae.n == 0:
+                raise RuntimeError(
+                    "QNDF requires at least one differential equation (dae.n > 0). "
+                    "Use 'trapezoid' or 'backeuler' for algebraic-only systems.")
+            self.qndf_cache = QNDFCache(
+                n=system.dae.n, abstol=self.config.abstol, reltol=self.config.reltol)
+
         self.initialized = True
+
+        # populate delta addresses for stability criteria check
+        if self.config.criteria and system.SynGen.n > 0:
+            system.conn.check_connectivity(info=False)
 
         # test if residuals are close enough to zero
         if self.config.test_init:
@@ -244,7 +291,7 @@ class TDS(BaseRoutine):
         if system.streaming.dimec is None:
             system.streaming.connect()
 
-        if system.config.dime_enabled:
+        if system.runtime.dime_enabled:
             # send out system data using DiME
             self.streaming_init()
             self.streaming_step()
@@ -256,6 +303,19 @@ class TDS(BaseRoutine):
         self.x0 = np.zeros_like(system.dae.x)
         self.y0 = np.zeros_like(system.dae.y)
         self.f0 = np.zeros_like(system.dae.f)
+        self.xs = np.zeros_like(system.dae.x)
+        self.ys = np.zeros_like(system.dae.y)
+
+        # save post-init DAE state for reinit()
+        self._x_t0 = system.dae.x.copy()
+        self._y_t0 = system.dae.y.copy()
+
+        # snapshot post-init model state for reinit()
+        # Covers device status (u, ue), ConstServices (Fault.uf, vref0, paux0),
+        # and NumParams that Alter +/-/*/÷ may modify during simulation
+        for mdl in system.exist.pflow_tds.values():
+            if mdl.n > 0:
+                mdl.snapshot_init()
 
         _, s1 = elapsed(t0)
 
@@ -264,16 +324,14 @@ class TDS(BaseRoutine):
         if self.test_ok is True:
             logger.info("Initialization was successful.")
         elif self.test_ok is False:
-            logger.error("Initialization failed!!")
-            logger.error("If you are developing a new model, check the initialization with")
+            logger.error("** Initialization FAILED **")
+            logger.error("For detailed debugging:")
             logger.error("   andes -v 10 run -r tds --init %s", self.system.files.case)
-            logger.error("Otherwise, check the variables that are initialized out of limits.")
         else:
             logger.warning("Initialization results were not verified.")
 
         if system.dae.n == 0:
-            if system.options.get("verbose", 20) <= 20:
-                tqdm.write('No differential equation detected.')
+            logger.info('No differential equation detected.')
         return system.dae.xy
 
     def summary(self):
@@ -364,8 +422,12 @@ class TDS(BaseRoutine):
 
         # Get appropriate tqdm based on environment (terminal, notebook, or batch)
         tqdm_cls, disable = get_tqdm(self.config.no_tqdm)
-        self.pbar = tqdm_cls(total=100, unit='%', ncols=80, ascii=True,
-                             file=sys.stdout, disable=disable)
+
+        pbar_kwargs = dict(total=100, unit='%', disable=disable)
+        if tqdm_cls is not tqdm_nb:
+            pbar_kwargs.update(ncols=80, ascii=True, file=sys.stdout)
+
+        self.pbar = tqdm_cls(**pbar_kwargs)
 
         # set initial pbar percentage; also works for resumed simulation
         perc = round((dae.t - config.t0) / (config.tf - config.t0) * 100, 2)
@@ -396,10 +458,13 @@ class TDS(BaseRoutine):
                 step_status = self._csv_step()
 
             # record number of iterations and success flag
-            if system.config.save_stats:
+            if system.runtime.save_stats:
                 self.call_stats.append((system.dae.t.tolist(), self.niter, step_status))
 
             if step_status:
+                # evaluate observable variables after convergence
+                system.b_update(system.exist.pflow_tds)
+
                 if config.save_every != 0:
                     if config.save_every == 1:
                         dae.store()
@@ -511,7 +576,7 @@ class TDS(BaseRoutine):
             logger.info('Outputs written in %s.', s1)
 
         # end data streaming
-        if system.config.dime_enabled:
+        if system.runtime.dime_enabled:
             system.streaming.finalize()
 
         # load data into `TDS.plotter` in a notebook or in an interactive mode
@@ -522,7 +587,10 @@ class TDS(BaseRoutine):
 
     def itm_step(self):
         """
-        Integrate for the step size of ``self.h`` using implicit trapezoid method.
+        Integrate one step of size ``self.h`` using the configured DAE method.
+
+        Delegates to ``self.method.step(self)`` where ``self.method`` is set by
+        ``set_method()``.
 
         Returns
         -------
@@ -556,11 +624,11 @@ class TDS(BaseRoutine):
 
         Notes
         -----
-        A heuristic function is used for variable time step size ::
+        Step-size control is delegated to ``self.method.calc_h()``.
 
-                 min(0.50 * h, hmin), if niter >= 15
-            h =  max(1.10 * h, hmax), if niter <= 6
-                 min(0.95 * h, hmin), otherwise
+        The default (``ImplicitIter.calc_h``) applies a niter-based heuristic.
+        Adaptive methods (``TrapezoidAdaptive``, ``QNDF``) set ``deltat``
+        inside their ``step()`` and only check the bust condition here.
 
         Returns
         -------
@@ -574,38 +642,8 @@ class TDS(BaseRoutine):
         # t=0, first iteration (not previously failed), or resumed simulation
         if (system.dae.t == 0 and self.niter == 0) or resume:
             self.deltat = self._calc_h_first()
-
-        elif config.fixt and not config.shrinkt and (not self.converged):
-            self.deltat = 0
-            self.busted = True
-            self.err_msg = f"Simulation did not converge with step size h={self.config.tstep:.4f}.\n"
-            self.err_msg += "Reduce the step size `tstep`, or set `shrinkt = 1` to let it shrink."
         else:
-            if self.converged:
-                if self.niter >= 15:
-                    self.deltat = max(self.deltat * 0.5, self.deltatmin)
-                elif self.niter <= 6:
-                    self.deltat = min(self.deltat * 1.1, self.deltatmax)
-                else:
-                    self.deltat = max(self.deltat * 0.95, self.deltatmin)
-
-                # for converged cases, set step size back to the initial `config.tstep`
-                if config.fixt:
-                    self.deltat = min(config.tstep, self.deltat)
-
-                if self.chatter is True:
-                    # one can do something such as increasing the step size, but
-                    # stopping chattering is not guaranteed
-
-                    # remember of unset the `chatter` flag
-                    self.chatter = False
-
-            else:
-                self.deltat *= 0.9
-                if self.deltat < self.deltatmin:
-                    self.deltat = 0
-                    self.err_msg = "Time step reduced to zero. Convergence not likely."
-                    self.busted = True
+            self.method.calc_h(self)
 
         self.h = self.deltat
 
@@ -675,6 +713,20 @@ class TDS(BaseRoutine):
                 logger.debug('Increased deltatmax to tstep=%g.', config.tstep)
                 self.deltatmax = config.tstep
 
+        # Explicit dtmax overrides the auto-computed deltatmax
+        if config.dtmax > 0:
+            self.deltatmax = config.dtmax
+            self.deltat = min(self.deltat, self.deltatmax)
+            self.deltatmin = min(self.deltatmin, self.deltatmax / 20)
+
+        # Adaptive-only minimum floor. Default is looser than `deltatmin`
+        # so adaptive controllers can survive sharp event transients.
+        if config.dtmin_adapt > 0:
+            self.deltatmin_adapt = min(config.dtmin_adapt, self.deltatmax)
+        else:
+            self.deltatmin_adapt = min(max(self.deltatmin * 1e-6, 1e-12),
+                                       self.deltatmax)
+
         # if from CSV, determine `deltat` from data
         if self.data_csv is not None:
             if self.data_csv.shape[0] > 1:
@@ -694,6 +746,18 @@ class TDS(BaseRoutine):
         self.plotter = TDSData(mode='memory', dae=self.system.dae)
         self.plt = self.plotter
 
+    def plot(self, *args, **kwargs):
+        """
+        Shorthand for ``TDS.plt.plot(...)``.
+
+        Loads the plotter on first use if not already loaded.
+        All arguments are passed through to :py:meth:`TDSData.plot`.
+        """
+
+        if self.plt is None:
+            self.load_plotter()
+        return self.plt.plot(*args, **kwargs)
+
     def test_init(self):
         """
         Test if the TDS initialization is successful.
@@ -709,17 +773,31 @@ class TDS(BaseRoutine):
         # reset diff. RHS where `check_init == False`
         system.dae.f[system.no_check_init] = 0.0
 
-        # warn if variables are initialized at limits
-        if system.config.warn_limits:
-            for model in system.exist.pflow_tds.values():
-                for item in model.discrete.values():
-                    item.warn_init_limit()
-
         if np.max(np.abs(system.dae.fg)) < self.config.tol:
             logger.debug('Initialization tests passed.')
             return True
 
-        # otherwise, show suspect initialization error
+        # otherwise, show initialization error diagnostics
+
+        # --- Cause: variables clamped at limits ---
+        limit_rows = []
+        for model in system.exist.pflow_tds.values():
+            for item in model.discrete.values():
+                limit_rows.extend(item.get_limit_report())
+
+        if limit_rows:
+            lim_tab = Tab(
+                title='Variables clamped at limits during initialization',
+                header=['Model', 'Idx', 'Variable', 'Limit (param)',
+                        'Limit Value', 'Unconstr. Value'],
+                data=[[r['model'], r['idx'], r['var'], r['limit_name'],
+                       f"{r['limit_val']:.6g}", f"{r['unconstr']:.6g}"]
+                      for r in limit_rows],
+            )
+            logger.error(lim_tab.draw())
+            logger.error('Clamped variables may cause the equation mismatches below.')
+
+        # --- Effect: equations with nonzero residuals ---
         fail_idx = np.ravel(np.where(abs(system.dae.fg) >= self.config.tol))
         nan_idx = np.ravel(np.where(np.isnan(system.dae.fg)))
         bad_idx = np.hstack([fail_idx, nan_idx])
@@ -728,17 +806,22 @@ class TDS(BaseRoutine):
         nan_names = [system.dae.xy_name[int(i)] for i in nan_idx]
         bad_names = fail_names + nan_names
 
-        title = 'Suspect initialization issue! Simulation may crash!'
-        err_data = {'Name': bad_names,
-                    'Var. Value': system.dae.xy[bad_idx],
-                    'Eqn. Mismatch': system.dae.fg[bad_idx],
-                    }
-        tab = Tab(title=title,
-                  header=err_data.keys(),
-                  data=list(map(list, zip(*err_data.values()))),
-                  )
+        bad_estr = []
+        n = system.dae.n
+        for i in bad_idx:
+            ii = int(i)
+            if ii < n:
+                entry = system.dae.x_map.get(ii)
+            else:
+                entry = system.dae.y_map.get(ii - n)
+            bad_estr.append(entry[1].e_str if entry and entry[1].e_str else '')
 
-        logger.error(tab.draw())
+        err_tab = Tab(
+            title='** Equations with nonzero residuals **',
+            header=['Name', 'Eqn. Mismatch', 'Equation (0=)'],
+            data=list(map(list, zip(bad_names, system.dae.fg[bad_idx], bad_estr))),
+        )
+        logger.error(err_tab.draw())
 
         if system.options.get('verbose') == 1:
             breakpoint()
@@ -812,9 +895,17 @@ class TDS(BaseRoutine):
             self.custom_event = False
             ret = True
 
-        # check system connectivity after a switching
-        if ret is True and self.config.check_conn == 1:
-            system.connectivity(info=False)
+        # check system connectivity if topology changed during switching
+        if self.config.check_conn == 1 and system.conn._dirty:
+            system.conn.check_connectivity(info=False)
+
+        if ret and self.qndf_cache is not None:
+            self.qndf_cache.reset_for_event(system.dae.x[:system.dae.n])
+
+        # Method-specific no-LTE restart window after discontinuities.
+        if ret and self.method.nolte_event_steps > 0:
+            self._adaptive_nolte_steps = max(self._adaptive_nolte_steps,
+                                             self.method.nolte_event_steps)
 
         return ret
 
@@ -1003,32 +1094,133 @@ class TDS(BaseRoutine):
             logger.debug(f'{v:<10} {self.system.dae.xy_name[v]:<20} {assoc_vars[v]:<20g} '
                          f'{self.system.dae.fg[v]:<20g}')
 
+    def _reset_integration(self):
+        """
+        Reset integration state that changes during ``TDS.run()``.
+
+        Preserves infrastructure that is invariant between episodes
+        (``Teye``, ``qg``, sparse patterns, addresses).
+        Called by both :meth:`reset` and :meth:`reinit`.
+        """
+        # step-size control
+        self.deltat = 0
+        self.deltatmin = 0
+        self.deltatmin_adapt = 0
+        self.deltatmax = 0
+        self.h = 0
+        self.last_pc = 0.0
+
+        # convergence / error tracking
+        self.converged = False
+        self.last_converged = False
+        self.busted = False
+        self.chatter = False
+        self.err_msg = ''
+        self.niter = 0
+        self.mis = [1, 1]
+
+        # event scheduling
+        self._switch_idx = 0        # index into `System.switch_times`
+        self._last_switch_t = -999  # the last event time
+        self.custom_event = False
+        self._adaptive_nolte_steps = 0
+
+        # statistics
+        self.call_stats = list()
+
+        # predictor / scratch arrays (None before first init)
+        if self.x0 is not None:
+            self.x0[:] = 0
+        if self.y0 is not None:
+            self.y0[:] = 0
+        if self.f0 is not None:
+            self.f0[:] = 0
+        if self.xs is not None:
+            self.xs[:] = 0
+        if self.ys is not None:
+            self.ys[:] = 0
+
+        # QNDF integration history (uses existing reset_for_event API)
+        if self.qndf_cache is not None:
+            self.qndf_cache.reset_for_event(self.system.dae.x)
+
     def reset(self):
         """
         Reset internal states to pre-init condition.
         """
-        self.deltat = 0
-        self.deltatmin = 0
-        self.deltatmax = 0
-        self.h = 0
-        self.last_pc = 0.0
+        self._reset_integration()
+
+        # infrastructure teardown (not needed for reinit)
         self.Teye = None
         self.qg = np.array([])
-
-        self.converged = False
-        self.last_converged = False
-        self.busted = False
-        self.niter = 0
-        self._switch_idx = 0        # index into `System.switch_times`
-        self._last_switch_t = -999  # the last event time
-        self.custom_event = False
-        self.mis = [1, 1]
         self.system.dae.t = np.array(0.0)
         self.pbar = None
         self.plotter = None
         self.plt = None             # short name for `plotter`
 
+        self.qndf_cache = None
         self.initialized = False
+
+    def reinit(self):
+        """
+        Reset TDS to post-init state for a new simulation episode.
+
+        Re-derives all dependent state (discrete flags, residuals, antiwindup
+        bindings) from saved initial ``(x, y)`` via idempotent evaluation.
+        Invariants (addresses, sparse patterns, ``Teye``) are preserved.
+
+        This is designed for RL training loops where ``TDS.run()`` is called
+        repeatedly with different disturbances or control actions::
+
+            ss = andes.load('case.raw')
+            ss.PFlow.run()
+            ss.TDS.init()
+
+            for episode in range(100_000):
+                ss.TDS.reinit()
+                ss.Alter.amount.v[0] = random()
+                ss.TDS.config.tf = 20.0
+                ss.TDS.run(no_summary=True)
+
+        Restores: DAE state ``(x, y)``, device status ``(u, ue)``,
+        ConstService values (setpoints, Fault flags), NumParam values
+        (including those modified by ``Alter``), and observable variables.
+        """
+        if not self.initialized:
+            raise RuntimeError("Call TDS.init() before reinit()")
+
+        system = self.system
+        dae = system.dae
+
+        # 1. Restore the 2 essential arrays
+        dae.x[:] = self._x_t0
+        dae.y[:] = self._y_t0
+        dae.set_t(0.0)
+        dae.kcount = 0
+        dae.clear_fg()
+
+        # 2. Clear time series
+        dae.ts.reset()
+
+        # --- Restore model state (device status, services, params) ---
+        for mdl in system.exist.pflow_tds.values():
+            if mdl.n > 0:
+                mdl.restore_init()
+
+        # --- Re-derive all dependent state ---
+        system.vars_to_models()
+        self._reset_integration()
+        self.fg_update(system.exist.tds, init=True)
+
+        for item in system.antiwindups:
+            for key, _, eqval in item.x_set:
+                np.put(dae.f, key, eqval)
+
+        system.b_update(system.exist.pflow_tds)
+        self.calc_h()
+
+        # --- Episode bookkeeping ---
+        system.exit_code = 0
 
     def rewind(self, t):
         """
@@ -1045,7 +1237,7 @@ class TDS(BaseRoutine):
         None
         """
         system = self.system
-        if system.config.dime_enabled:
+        if system.runtime.dime_enabled:
             system.streaming.send_init(recepient='all')
             logger.info('Broadcast system data. Waiting to receive modules init info...')
             time.sleep(0.5)
@@ -1060,7 +1252,7 @@ class TDS(BaseRoutine):
         None
         """
         system = self.system
-        if system.config.dime_enabled:
+        if system.runtime.dime_enabled:
             system.streaming.sync_and_handle()
             system.streaming.vars_to_modules()
             system.streaming.vars_to_pmu()
@@ -1076,11 +1268,19 @@ class TDS(BaseRoutine):
         """
 
         if name not in method_map:
-            logger.error('"%s" is not a registered dae method name. " \
-                         "Falling back to trapezoid.', name)
+            logger.error('"%s" is not a registered dae method name. '
+                         'Falling back to trapezoid.', name)
             name = 'trapezoid'
 
         self.method = method_map[name]()
+        self.config.method = name
+
+        if self.method.requires_variable_step and self.config.fixt:
+            logger.info('"%s" requires variable step size; setting fixt=0.', name)
+            self.config.fixt = 0
+
+        if name != 'qndf':
+            self.qndf_cache = None
 
     def check_criteria(self):
         """
@@ -1090,6 +1290,46 @@ class TDS(BaseRoutine):
         res = deltadelta(self.system.dae.x[self.system.SynGen.delta_addr],
                          self.config.ddelta_limit)
         return res
+
+    def get_timeseries(self, var):
+        """
+        Return time-series data for a variable as a DataFrame.
+
+        Dispatches automatically based on the variable type (State/ExtState
+        use ``dae.ts.x``; Algeb/ExtAlgeb use ``dae.ts.y``).
+
+        Parameters
+        ----------
+        var : BaseVar
+            A variable instance, e.g., ``ss.GENROU.omega`` or ``ss.Bus.v``.
+
+        Returns
+        -------
+        pandas.DataFrame
+            DataFrame with time as index and device idx values as columns.
+        """
+
+        from andes.core.var import BaseVar
+
+        if not isinstance(var, BaseVar):
+            raise TypeError(
+                f"Expected a variable (e.g., ss.GENROU.omega), got {type(var).__name__}."
+            )
+
+        ts = self.system.dae.ts
+
+        if ts.t is None or len(ts.t) == 0:
+            raise ValueError("No time-series data. Run TDS first.")
+
+        data_matrix = getattr(ts, var.v_code)
+        data = data_matrix[:, var.a]
+
+        if len(var.a) == len(var.owner.idx.v):
+            columns = list(var.owner.idx.v)
+        else:
+            columns = list(range(len(var.a)))
+
+        return pd.DataFrame(data, index=ts.t, columns=columns)
 
     def _csv_data_to_dae(self):
         """

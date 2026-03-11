@@ -2,10 +2,13 @@
 Output TXT file formatter.
 """
 
+import logging
 import os
 from typing import Iterable
 
 from andes.shared import np
+
+logger = logging.getLogger(__name__)
 
 
 def dump_data(text, header, rowname, data, file, width=18, precision=5):
@@ -50,8 +53,7 @@ def dump_data(text, header, rowname, data, file, width=18, precision=5):
                             ncol = len(Data)
                             out = [Data[i][idx] for i in range(ncol)]
                     else:
-                        print(Data)
-                        print('Unexpected Data during output, in formats/txt.py')
+                        logger.error('Unexpected data during txt output: %s', Data)
 
                     s = '{:{width_first}s}'  # for row header
                     for ii, col in enumerate(out):

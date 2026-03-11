@@ -41,7 +41,7 @@ class Streaming:
         streaming will be automatically enabled.
         Otherwise, settings from the Config file will be used.
         """
-        config = self.system.config
+        config = self.system.runtime
         options = self.system.options
 
         # enable only when both arguments are supplied
@@ -59,12 +59,12 @@ class Streaming:
             logger.info('Dime connection to "%s" was successful.', config.dime_address)
             return True
         except NameError:
-            logger.error('Dime not installed. Set System config `dime_enabled` to `0` to suppress warning.')
-            self.system.config.dime_enabled = False
+            logger.error('Dime not installed. Set `system.runtime.dime_enabled = 0` to suppress this warning.')
+            self.system.runtime.dime_enabled = False
 
         except FileNotFoundError:
             logger.error('Dime sever not found at "%s".', config.dime_address)
-            self.system.config.dime_enabled = False
+            self.system.runtime.dime_enabled = False
 
         return False
 
@@ -224,7 +224,7 @@ class Streaming:
         Broadcast `Varheader`, `Idxvgs` and `SysParam`
         to all DiME clients after power flow routine
         """
-        if not self.system.config.dime_enabled:
+        if not self.system.runtime.dime_enabled:
             return
         if not self.params_built:
             self.build_init()
@@ -366,7 +366,7 @@ class Streaming:
         """
         Sync until the queue is empty. Handle sync'ed commands.
         """
-        if not self.system.config.dime_enabled:
+        if not self.system.runtime.dime_enabled:
             return
         current_devices = self.dimec.devices()
 
@@ -379,7 +379,7 @@ class Streaming:
         # send Varheader, SysParam and Idxvgs to modules on the fly
         if set(current_devices) != set(self.last_devices):
             new_devices = list(current_devices)
-            new_devices.remove(self.system.config.dime_name)
+            new_devices.remove(self.system.runtime.dime_name)
             for item in self.last_devices:
                 if item in new_devices:
                     new_devices.remove(item)
@@ -415,7 +415,7 @@ class Streaming:
         in the variable `pmudata`
 
         """
-        if not self.system.config.dime_enabled:
+        if not self.system.runtime.dime_enabled:
             return
         if not self.has_pmu:
             return
@@ -443,7 +443,7 @@ class Streaming:
 
         :return: None
         """
-        if not self.system.config.dime_enabled:
+        if not self.system.runtime.dime_enabled:
             return
 
         for mod in self.ModuleInfo.keys():
@@ -483,7 +483,7 @@ class Streaming:
 
         :return: None
         """
-        if not self.system.config.dime_enabled:
+        if not self.system.runtime.dime_enabled:
             return
 
         self.system.streaming.dimec.broadcast_r(DONE=1)

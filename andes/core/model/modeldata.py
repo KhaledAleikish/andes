@@ -2,6 +2,7 @@
 Module for ModelData.
 """
 
+import difflib
 import logging
 from collections import OrderedDict, defaultdict
 
@@ -37,7 +38,7 @@ class ModelData:
 
     flags : dict
         Flags to control the routine and functions that get called. If the model is using user-defined
-        numerical calls, set `f_num`, `g_num` and `j_num` properly.
+        numerical calls, set `f_num`, `g_num`, `j_num`, and `j_setup` properly.
 
     Notes
     -----
@@ -95,10 +96,7 @@ class ModelData:
 
         if not hasattr(self, 'cache'):
             self.cache = ModelCache()
-        self.cache.add_callback('dict', self.as_dict)
-        self.cache.add_callback('df', lambda: self.as_df())
-        self.cache.add_callback('dict_in', lambda: self.as_dict(True))
-        self.cache.add_callback('df_in', lambda: self.as_df(vin=True))
+        self.cache._owner = self
 
         if three_params is True:
             self.idx = DataParam(info='unique device idx')
@@ -165,7 +163,15 @@ class ModelData:
             if violation is not None:
                 self._param_corrections[(name, violation)].append(idx)
         if len(kwargs) > 0:
-            logger.warning("%s: unused data %s", self.class_name, str(kwargs))
+            valid_names = list(self.params.keys())
+            for bad_key in kwargs:
+                close = difflib.get_close_matches(bad_key, valid_names, n=3, cutoff=0.6)
+                if close:
+                    logger.warning("%s: unrecognized field '%s'. Did you mean: %s?",
+                                   self.class_name, bad_key, ', '.join(close))
+                else:
+                    logger.warning("%s: unrecognized field '%s'. Valid fields: %s",
+                                   self.class_name, bad_key, ', '.join(valid_names))
 
     def report_corrections(self):
         """
@@ -364,7 +370,7 @@ class ModelData:
                     v_idx.append(self.idx.v[pos])
             if not v_idx:
                 if allow_none is False:
-                    raise IndexError(f'{list(keys)}={v_search} not found in {self.class_name}')
+                    raise IndexError(f'No {self.class_name} device found matching {list(keys)}={v_search}')
                 else:
                     v_idx = [default]
 

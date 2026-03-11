@@ -10,6 +10,260 @@
 
 The APIs before v3.0.0 are in beta and may change without prior notice.
 
+## v2.0 Notes
+
+### v2.0.0 (2026-03-11)
+
+Modeling framework changes:
+
+- Add universal `ue` (effective online status) field to the base `Model` class.
+  Models should use `ue` instead of `u` in equations so that parent-offline
+  status automatically disables children.
+- Add `status_parent=True` flag to `IdxParam` for declaring parent-child status
+  relationships (e.g., Exciter->SynGen, PSS->Exciter).
+- Add `System.set_status()` / `get_status()` API for setting device status with
+  recursive propagation of `ue = u * parent.ue` to downstream controllers via
+  BackRef.
+- Add `propagate_init_status()` for init-time status propagation, replacing the
+  old per-model `ug`/`uee` ExtParam mechanism.
+- Add DAE compaction to remove replaced static generators' algebraic variables
+  from the Newton-Raphson system during TDS, reducing system size for
+  dynamics-heavy cases.
+- Add `Observable` variable type for substitution-based recording without
+  adding variables to the DAE system.
+- Add two-pass initialization with block-to-Observable conversions and discrete
+  dependency tracking.
+- Add pre-evaluation of discrete flags before the initialization pass.
+- Add nonmonotone backtracking line search to the Newton-Raphson solver in both
+  PFlow and TDS for improved convergence robustness.
+- Separate `j_numeric` into two hooks: `j_setup` (one-time sparsity pattern and
+  constant Jacobian registration, called by `store_sparse_pattern`) and `j_numeric`
+  (per-iteration numerical Jacobian update, called by `j_update`, parallel to
+  `g_numeric`/`f_numeric`). Add `flags.j_setup` for the former; `flags.j_num` now
+  controls the per-iteration hook.
+
+Model changes:
+
+- Add `SHAFT5` 5-mass torsional shaft model (HP-IP-LP-Rotor-EX) for
+  sub-synchronous resonance studies on synchronous generators. Includes
+  `DynShaft` group and IEEE 14-bus test case (`ieee14_shaft5.json`).
+- Add `REECB1` renewable energy control model with test cases.
+- Remove `ug` ExtParam and custom `ue` ConstService from `ExcBase` and `TGBase`;
+  now inherited from the base `Model` class.
+- Remove `uee` ExtService and custom `ue` ConstService from `PSSBase`.
+- Rename DGPrct `ue` Algeb (lock flag) to `lock` to avoid collision with the new
+  base `ue`.
+- Fix EXDC2 `Se0` formula to use `ue` instead of removed `ug`.
+- Enable `AntiWindup` init limit adjustment and fix REEC models.
+- Fix `zero_out` bypass in `LeadLag` and `LeadLag2ndOrd` blocks.
+- Add `FreqDiv` frequency divider model (Milano & Ortega 2017) for algebraic
+  bus frequency estimation from generator rotor speeds and network susceptance.
+  Uses constant Jacobians via `j_setup` for zero per-iteration overhead.
+
+Eigenvalue analysis:
+
+- Replace permutation-based reorder with a fold/eliminate/reduce pipeline in
+  eigenvalue analysis for improved numerical robustness.
+
+State estimation:
+
+- Add LAV (Least Absolute Value) estimator via iteratively reweighted least
+  squares (IRLS), robust to gross measurement errors. Pass
+  ``algorithm=lav`` to ``SE.run()``.
+- Vectorize weight handling in both WLS and LAV to avoid dense diagonal
+  matrix construction.
+- Add chi-squared test guard that rejects with a warning for non-WLS
+  algorithms.
+- Raise default ``max_iter`` from 20 to 100 for IRLS convergence.
+
+Time-domain simulation:
+
+- Add QNDF variable-order (1–5) quasi-constant-step NDF integration method
+  (Shampine & Reichelt 1997, equivalent to MATLAB ``ode15s`` / Julia ``QNDF()``).
+  Select with ``ss.TDS.config.method = 'qndf'``. Features error-based adaptive
+  step control with ``abstol``/``reltol`` tolerances, automatic order selection,
+  D-table rescaling, and event-aware cache reset.
+- Add ``trap_adapt`` adaptive trapezoidal integration method with step-doubling
+  Richardson extrapolation for local truncation error (LTE) estimation. Select
+  with ``ss.TDS.config.method = 'trap_adapt'``. Features ``abstol``/``reltol``
+  error control, no-LTE recovery mode near events, and automatic ``fixt=0``
+  override.
+- Add ``dtmax`` TDS config parameter to explicitly cap the maximum step size for
+  variable-step methods (``0`` = auto from frequency and time span).
+- Refactor step-size control into polymorphic ``calc_h()`` on each integration
+  method class, replacing the monolithic if/elif/else chain in ``TDS.calc_h``.
+  Extract shared niter-based heuristic into ``ImplicitIter.niter_next_h()``
+  and shared adaptive bust-check into ``check_adaptive_bust()``.
+- Add ``requires_variable_step`` class attribute to integration methods,
+  replacing the removed ``adaptive`` flag.
+- Add ``TDS.reinit()`` for fast idempotent reset to the post-init state,
+  enabling RL training loops with ~1ms per reset instead of full reload.
+  Restores DAE state ``(x, y)``, device status ``(u, ue)``, ConstService
+  values, and NumParam values, then re-derives discrete flags and residuals
+  via ``fg_update(init=True)``.  Internally, ``Model.snapshot_init()`` /
+  ``Model.restore_init()`` save and restore model-level mutable state;
+  ``NumParam`` and ``ConstService`` each store a ``_v_t0`` snapshot.
+
+Reinforcement learning:
+
+- Add ``andes.rl`` module with ``AndesEnv``, a Gymnasium-compatible environment
+  for reinforcement learning on power system dynamics.  Supports configurable
+  observations (with optional device ``idx`` selection), group-level and
+  model-level action setpoints, custom reward and disturbance functions, and
+  fast reset via ``TDS.reinit()``.  Install with ``pip install andes[rl]``.
+- Add tutorial notebook (Tutorial 15: Reinforcement Learning) covering
+  environment construction, observation and action specification, reward
+  function design, disturbance injection, policy comparison, and integration
+  with Stable-Baselines3.
+
+PSS/E parser:
+
+- Refactor RAW parser to a data-driven architecture with PSS/E v34 support.
+- Fix DYR parser to handle embedded quoted strings and comma-separated values.
+
+Refactoring:
+
+- Refactor `System` internals by extracting `RegistryLoader` and
+  `CodegenManager`; prefer direct calls via `system.registry.*` and
+  `system.codegen.*`, with legacy `System` delegate methods deprecated for
+  removal in v3.0.
+- Convert the `System` module into a package and extract `DAECompactor`.
+- Extract config runtime logic into `SystemConfigRuntime`
+  (`andes.system.config_runtime`); prefer `system.config_runtime.*` over
+  facade-level helpers. Legacy wrappers in `andes.system.facade` are deprecated
+  and scheduled for removal in v3.0.
+- Extract model evaluator logic into `ModelEvaluator`
+  (`andes.core.model.model_evaluator`) using composition. Keep `Model` methods
+  (`f_update`, `g_update`, `j_update`, service/discrete updates, and input
+  refreshers) as delegate wrappers to preserve call sites.
+- Move connectivity check into `ConnMan` and optimize.
+- Replace `ConnMan` bus propagation with declarative status framework.
+- Refactor `SystemConfigRuntime` into phased config resolution
+  (`load_rc` → `merge_file_config` → `apply_cli_overrides` → `finalize`) and
+  restructure `System.__init__` with `_init_managers` / `_init_models` helpers.
+- Split `System.config` into `system.config` (case-relevant: `freq`, `mva`,
+  `diag_eps`, `warn_abnormal`) and `system.runtime` (machine/environment:
+  `numba`, `sparselib`, `dime_*`, `np_*`, etc.). Only case config is written
+  to data files; runtime config persists in `andes.rc` under `[Runtime]`.
+- Move per-routine `sparselib` to system-wide `system.runtime.sparselib`.
+- Add `Config.check()` warning for unrecognized config fields (typos, misplaced
+  keys) and `Config._add()` warning for fields moved to `[Runtime]` in v2.0.
+
+I/O:
+
+- Add embedded configuration support: xlsx files gain a `_config` sheet and JSON
+  files gain a `_config` key, both using a `section`/`key`/`value` record format.
+  File-embedded config overrides `andes.rc` defaults but is itself overridden by
+  CLI `config_option`.
+- Route `u` changes through `set_status` and remove `Bus.set` override.
+- Replace `ModelCache` boilerplate with declarative registration.
+- Rewrite TDS init error diagnostics with limit clamping report and DAE
+  reverse map.
+
+I/O and file loading:
+
+- Extend ``--addfile`` (``-a``) to accept multiple files and support cross-format
+  loading. Any supported format (xlsx, json, matpower) can be used as an
+  additional file on top of any base case format. The ``-a`` flag can be
+  repeated on the command line (e.g., ``-a f1.dyr -a f2.xlsx``), and the
+  Python API accepts both a string and a list.
+
+API improvements:
+
+- Consolidate ``set()`` and ``alter()`` into a unified ``set()`` method with a
+  cleaner positional signature: ``set(src, idx, value, base=None)``.
+  The old ``alter()`` method is deprecated and will be removed in v3.0.
+  See the upgrade guide below.
+- Add ``TDS.get_timeseries(var)`` convenience method that returns time-series
+  data as a pandas DataFrame, dispatching automatically by variable type
+  (State, Algeb, ExtState, ExtAlgeb, Observable).
+- Add fuzzy-match warnings for unrecognized field names in ``System.add()``,
+  suggesting close matches with ``difflib.get_close_matches``.
+- Rename ``System.add()`` first positional parameter from ``model`` to
+  ``model_name`` to resolve the keyword collision with ``Alter`` and
+  ``Toggle``'s ``model`` device parameter. All models (including ``Alter``
+  and ``Toggle``) can now use kwargs: ``ss.add('Toggle', model='Line',
+  dev='Line_5', t=1.0)``. Dict form remains supported for backward
+  compatibility.
+- Add ``CPF.run_qv()`` and ``CPF.plot_qv()`` for QV curve analysis at a
+  specified bus. Delegates to the existing continuation engine with Q-only
+  targets; results stored in ``qv_q``, ``qv_v``, and ``qv_bus``.
+- Add Plotly backend for interactive TDS plots in Jupyter notebooks via
+  ``ss.TDS.plt.plot(..., backend='plotly')``. Supports zoom, pan, hover
+  tooltips, horizontal/vertical reference lines, figure reuse, and HTML
+  export. LaTeX legend labels are automatically replaced with plain text.
+
+Packaging:
+
+- Make ``numba`` an optional dependency. Install with ``pip install andes[performance]``
+  to enable Numba JIT compilation. ANDES runs without numba by default
+  (``runtime.numba = 0``); if numba is enabled but not installed, a warning is
+  logged and execution continues without JIT.
+
+Upgrade guide — ``set()`` / ``alter()`` consolidation:
+
+- **``alter()`` → ``set()`` with ``base='device'``**: ``alter()`` accepted
+  values in device (input) base, converted them via ``pu_coeff``, and updated
+  the ``vin`` record. The new equivalent is ``set(..., base='device')``.
+
+  ```python
+  # Before (deprecated, emits FutureWarning):
+  ss.GENROU.alter('M', 1, 10.0)
+
+  # After:
+  ss.GENROU.set('M', 1, 10.0, base='device')
+  ```
+
+- **``set()`` old-style keyword arguments**: The old ``set(src, idx, attr, value)``
+  four-argument form is deprecated. Drop the ``attr`` argument (it defaults to
+  ``'v'``):
+
+  ```python
+  # Before (deprecated, emits FutureWarning):
+  ss.GENROU.set('M', 'GENROU_1', 'v', 2.0)
+
+  # After:
+  ss.GENROU.set('M', 'GENROU_1', 2.0)
+  ```
+
+- **Default base is system base**: ``set(src, idx, value)`` writes the value
+  directly in system per-unit, matching what ``get()`` returns. This makes
+  read-modify-write round-trips correct without conversion:
+
+  ```python
+  h = ss.GENROU.get('M', 'GENROU_1')   # system-base value
+  ss.GENROU.set('M', 'GENROU_1', h * 1.2)   # 20% increase, same base
+  ```
+
+- **Time constant updates are automatic**: When modifying a time constant
+  parameter (one whose variable has a ``t_const`` attribute), ``set()``
+  automatically updates ``dae.Tf`` and ``TDS.Teye``.
+
+Logging:
+
+- Unify all runtime output through Python's ``logging`` module with a single
+  ``TqdmStreamHandler`` that delegates to ``tqdm.write()`` to avoid corrupting
+  progress bars. Removes 9 ad-hoc ``tqdm.write()`` call sites and their
+  ``system.options["verbose"]`` guards. Timer events (Toggle, Fault, Alter,
+  TimeSeries) log at INFO; convergence diagnostics (daeint, QNDF) log at DEBUG.
+  Verbosity is now controlled entirely by ``logging.setLevel()``
+  (CLI: ``andes -v 10`` for DEBUG, ``-v 30`` for WARNING-only).
+  Library callers (e.g., ``andes.rl``) are silent by default since no handler
+  is installed without an explicit ``config_logger()`` call.
+- Convert operational ``print()`` calls in ``codegen.py`` and ``io/txt.py`` to
+  ``logger.info()`` / ``logger.error()``. CLI user-facing output
+  (``print_license``, ``versioninfo``, ``plot``) remains as ``print()``.
+
+Bug fixes:
+
+- TDS no longer checks connectivity at initialization time.
+- Fix `pflow_tds` not updated during TDS initialization.
+- Guard `save_unconstrained` against non-numeric `u.v` in discrete components.
+- Disable discrete warning when initialized value is exactly at the limit.
+- Clarify error message for device lookup failures in `find_idx`.
+- Show slack generator count and bus indices in connectivity warning.
+- Pin pandas version for pandapower compatibility.
+
 ## v1.10 Notes
 
 ### v1.10.1 (2026-03-09)

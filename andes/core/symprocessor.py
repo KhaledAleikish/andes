@@ -26,6 +26,30 @@ sp.OldPiecewise = sp.Piecewise
 sp.Piecewise = FixPiecewise
 
 
+def _warn_missing_e_str(class_name, var_name, eqn_type, has_numeric):
+    """Warn if a variable has no ``e_str`` but the model defines a numeric method.
+
+    Parameters
+    ----------
+    class_name : str
+        Model class name (for the log message).
+    var_name : str
+        Variable name (e.g., ``'f'``).
+    eqn_type : str
+        ``'f'`` for differential or ``'g'`` for algebraic.
+    has_numeric : bool
+        Whether the model has the corresponding ``{eqn_type}_numeric`` method.
+    """
+    if has_numeric:
+        logger.warning(
+            "%s.%s has no e_str but model defines %s_numeric(). "
+            "If %s_numeric writes to %s.e, set e_str='0' to "
+            "enable assembly into dae.%s.",
+            class_name, var_name, eqn_type,
+            eqn_type, var_name, eqn_type,
+        )
+
+
 class SymProcessor:
     """
     A helper class for symbolic processing and code generation.
@@ -66,7 +90,7 @@ class SymProcessor:
         self.vars_dict = OrderedDict()
         self.vars_int_dict = OrderedDict()   # internal variables only
         self.vars_list = list()       # list of variable symbols, corresponding to `self.xy`
-        self.substitution_map = {}    # mapping of ``SubsService`` to its expression
+        self.substitution_map = {}    # mapping of ``Observable`` symbols to their expressions
 
         self.f_list, self.g_list = list(), list()  # symbolic equations in lists
         self.f_matrix, self.g_matrix, self.s_matrix = list(), list(), list()  # equations in matrices
@@ -174,18 +198,94 @@ class SymProcessor:
 
     def generate_subs_expr(self):
         """
-        Generate expressions for substituting ``SubsService``.
+        Generate substitution map from ``Observable`` instances.
+
+        Dependency resolution (topological sort) is performed so that if
+        Observable B depends on Observable A, A's expression is substituted
+        into B before B is added to the map. Circular dependencies among
+        Observables raise an error.
         """
-        for name, instance in self.parent.services_subs.items():
-            if instance.v_str is not None:
-                expr = sp.sympify(instance.v_str, locals=self.inputs_dict)
-                self.substitution_map[self.inputs_dict[name]] = expr
+        observables = self.parent.observables
+        if len(observables) == 0:
+            return
+
+        obs_names = set(observables.keys())
+        obs_exprs = OrderedDict()
+        deps = OrderedDict()
+
+        for name, instance in observables.items():
+            if instance.e_str is None:
+                continue
+            expr = sp.sympify(instance.e_str, locals=self.inputs_dict)
+            obs_exprs[name] = expr
+            # find dependencies on other observables
+            deps[name] = []
+            for fs in sorted(expr.free_symbols, key=lambda s: s.name):
+                fs_name = str(fs)
+                if fs_name in obs_names and fs_name != name:
+                    deps[name].append(fs_name)
+
+        topo_order = resolve_deps(deps)
+
+        # check for circular dependencies
+        for item in topo_order:
+            if isinstance(item, list):
+                raise ValueError(
+                    f'{self.class_name}: circular dependency among Observables: {item}')
+
+        # build substitution map in topological order
+        self.obs_exprs_substituted = OrderedDict()
+        for name in topo_order:
+            if name not in obs_exprs:
+                continue
+            expr = obs_exprs[name]
+            # substitute earlier observables so the expression is fully expanded
+            expr = expr.subs(self.substitution_map)
+            self.substitution_map[self.inputs_dict[name]] = expr
+            self.obs_exprs_substituted[name] = expr
 
     def _do_substitute(self, input_expr):
         """
-        Helper function to substitute ``SubsService`` with its expression.
+        Helper function to substitute ``Observable`` symbols with their expressions.
         """
         return input_expr.subs(self.substitution_map)
+
+    def generate_observables(self):
+        """
+        Generate a single ``b_update`` function for evaluating all Observable
+        variables post-solve.
+
+        Uses the fully substituted expressions from ``generate_subs_expr()``
+        so that ``b_update`` only takes parameters and DAE variables as inputs.
+        """
+
+        logger.debug('- Generating observables for %s', self.class_name)
+
+        self.b_list = list()
+        self.calls.b = None
+        self.calls.b_args = list()
+
+        if not hasattr(self, 'obs_exprs_substituted') or len(self.obs_exprs_substituted) == 0:
+            return
+
+        sym_args = list()
+        for name, expr in self.obs_exprs_substituted.items():
+            free_syms = self._check_expr_symbols(expr)
+            for s in free_syms:
+                if s not in sym_args:
+                    sym_args.append(s)
+                    self.calls.b_args.append(str(s))
+            self.b_list.append(expr)
+
+        sym_args = sorted(sym_args, key=lambda s: s.name)
+        self.calls.b_args.sort()
+
+        if len(self.b_list) > 0 and any(b != 0 for b in self.b_list):
+            self.calls.b = sp.lambdify(sym_args, tuple(self.b_list),
+                                       modules=self.lambdify_func)
+
+            if 'select' in inspect.getsource(self.calls.b):
+                self.calls.b_args.extend(select_args_add)
 
     def generate_equations(self):
         """
@@ -213,8 +313,10 @@ class SymProcessor:
 
         for vlist, elist, ename, eargs in zip(vars_list, expr_list, eqn_names, eqn_args):
             sym_args = list()
+            num_flag = getattr(self.parent.flags, f'{ename}_num', False)
             for name, instance in vlist.items():
                 if instance.e_str is None:
+                    _warn_missing_e_str(self.class_name, name, ename, num_flag)
                     elist.append(0)
                 else:
                     try:
@@ -507,6 +609,9 @@ from andes.thirdparty.npfunc import *                               # NOQA
         out.append(self._rename_func(self.calls.f, 'f_update', yf))
         out.append(self._rename_func(self.calls.g, 'g_update', yf))
 
+        # observables
+        out.append(self._rename_func(self.calls.b, 'b_update', yf))
+
         # jacobians
         for name in self.calls.j:
             out.append(self._rename_func(self.calls.j[name], f'{name}_update', yf))
@@ -596,12 +701,32 @@ from andes.thirdparty.npfunc import *                               # NOQA
     def generate_dependency(self):
         """
         Generate dependency list and initialization order.
+
+        Includes discrete flag dependencies: if a variable's ``v_str``
+        references a discrete flag (e.g., ``lim_zi``), the discrete
+        component's BaseVar inputs are added as dependencies so that
+        the resolver orders them before the referencing variable.
+
+        Observable variables are included in the dependency graph
+        using their ``e_str`` as the init expression.
         """
+        from andes.core.var import BaseVar
+
         self.v_str_syms = OrderedDict()
         self.v_iter_syms = OrderedDict()
         deps = OrderedDict()
 
-        # convert to symbols
+        # --- build flag_deps: flag_symbol_name → [input var names] ---
+        flag_deps = {}
+        for disc_name, disc in self.parent.discrete.items():
+            dep_var_names = []
+            for inp in disc.input_list:
+                if isinstance(inp, BaseVar) and inp.name in self.vars_dict:
+                    dep_var_names.append(inp.name)
+            for flag_name in disc.get_names():
+                flag_deps[flag_name] = dep_var_names
+
+        # --- convert DAE variables to symbols ---
         for name, instance in self.cache.all_vars.items():
             if instance.v_str is not None:
                 sympified = sp.sympify(instance.v_str, locals=self.inputs_dict)
@@ -619,12 +744,22 @@ from andes.thirdparty.npfunc import *                               # NOQA
                 self._check_expr_symbols(sympified)
                 self.v_iter_syms[name] = sympified
 
-        # store deps for explicit and iterative initializers
+        # --- include Observable variables using e_str as init expression ---
+        for name, instance in self.parent.observables.items():
+            if instance.e_str is not None:
+                sympified = sp.sympify(instance.e_str, locals=self.inputs_dict)
+                sympified = self._do_substitute(sympified)
+                self._check_expr_symbols(sympified)
+                self.v_str_syms[name] = sympified
+            else:
+                self.v_str_syms[name] = sp.sympify('0.0', locals=self.inputs_dict)
+
+        # --- store deps with discrete flag awareness ---
         for name, expr in self.v_str_syms.items():
-            _store_deps(name, expr, self.vars_dict, deps)
+            _store_deps(name, expr, self.vars_dict, deps, flag_deps=flag_deps)
 
         for name, expr in self.v_iter_syms.items():
-            _store_deps(name, expr, self.vars_dict, deps)
+            _store_deps(name, expr, self.vars_dict, deps, flag_deps=flag_deps)
 
         # store deps for manually added dependent variables
         for name, instance in self.cache.vars_int.items():
@@ -646,6 +781,12 @@ from andes.thirdparty.npfunc import *                               # NOQA
                 continue
 
             for vi in item:
+                # Observable cannot participate in circular init deps
+                if vi in self.parent.observables:
+                    logger.error(
+                        "%s: Observable '%s' is in a circular init dependency. "
+                        "Observable cannot use v_iter.", self.class_name, vi)
+                    continue
                 if self.cache.all_vars[vi].v_iter is None:
                     logger.error("%s: v_iter not defined for %s" % (self.class_name, vi))
 
@@ -683,6 +824,13 @@ from andes.thirdparty.npfunc import *                               # NOQA
         for item in self.init_seq:
             if isinstance(item, str):
                 instance = self.parent.__dict__[item]
+
+                # Observable: use e_str (stored in v_str_syms) as assignment init
+                if item in self.parent.observables:
+                    if instance.e_str is not None:
+                        self.init_asn[item] = self.v_str_syms[item]
+                    continue
+
                 if instance.v_str is not None:
                     self.init_asn[item] = self.v_str_syms[item]
                 if instance.v_iter is not None:
@@ -795,20 +943,34 @@ from andes.thirdparty.npfunc import *                               # NOQA
         return out
 
 
-def _store_deps(name, sympified, vars_int_dict, deps):
+def _store_deps(name, sympified, vars_int_dict, deps, flag_deps=None):
     """
     Helper function to store dependencies to a dict.
 
     Used by ``resolve``.
+
+    Parameters
+    ----------
+    flag_deps : dict, optional
+        Mapping from discrete flag symbol names (e.g., ``'lim_zi'``) to
+        lists of variable names whose initialization must precede any
+        variable that references the flag.  Built from
+        ``Discrete.input_list`` filtered by ``isinstance(inp, BaseVar)``.
     """
 
     deps[name] = []
     free_symbols = sorted(sympified.free_symbols, key=lambda s: s.name)
     for fs in free_symbols:
-        if fs not in vars_int_dict.values():
-            continue
-        if fs not in deps[name]:
-            deps[name].append(str(fs))
+        sym_name = str(fs)
+        # Direct variable dependency
+        if fs in vars_int_dict.values():
+            if sym_name not in deps[name]:
+                deps[name].append(sym_name)
+        # Discrete flag dependency
+        elif flag_deps and sym_name in flag_deps:
+            for dep_var in flag_deps[sym_name]:
+                if dep_var not in deps[name]:
+                    deps[name].append(dep_var)
 
 
 def resolve_deps(graph):

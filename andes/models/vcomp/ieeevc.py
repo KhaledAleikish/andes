@@ -11,7 +11,8 @@ class IEEEVCData(ModelData):
 
     def __init__(self):
         ModelData.__init__(self)
-        self.avr = IdxParam(info='Exciter idx', mandatory=True, model='Exciter')
+        self.avr = IdxParam(info='Exciter idx', mandatory=True, model='Exciter',
+                            status_parent=True)
 
         self.rc = NumParam(default=0.0,
                            info="Active compensation degree.",
@@ -83,7 +84,7 @@ class IEEEVCModel(Model):
         self.vcomp = Algeb(info='Compensator output voltage to exciter',
                            tex_name=r'v_{comp}',
                            v_str='vct - u * v',
-                           e_str='vct - u * v - vcomp',
+                           e_str='vct - ue * v - vcomp',
                            )
 
         # do not need to interface to exciters here.
