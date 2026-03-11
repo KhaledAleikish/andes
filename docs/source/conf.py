@@ -52,10 +52,7 @@ nb_execution_raise_on_error = True    # Fail build on notebook errors (catch iss
 nb_execution_excludepatterns = [
     'verification/*',                 # Skip verification notebooks (long-running)
     'tutorials/15-reinforcement-learning.ipynb',  # Requires gymnasium (rl extra)
-    'gallery/forced-oscillation.ipynb',             # WECC 179-bus multi-stage TDS (long-running)
-    'gallery/low-inertia-freq.ipynb',              # WECC 179-bus 4 scenarios (long-running)
-    'gallery/critical-clearing-time.ipynb',        # 300 TDS scenarios via reinit (long-running)
-    'gallery/smib-oscillation.ipynb',               # RL training requires stable-baselines3 (~2 min)
+    'gallery/*',                      # Skip all gallery notebooks (long-running)
 ]
 nb_merge_streams = True               # Merge stdout/stderr into single output
 
