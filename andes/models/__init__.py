@@ -29,7 +29,7 @@ file_classes = list([
     ('exciter', ['EXDC2', 'IEEEX1', 'ESDC1A', 'ESDC2A', 'EXST1', 'ESST3A', 'SEXS',
                  'IEEET1', 'EXAC1', 'EXAC2', 'EXAC4', 'ESST4B', 'AC8B', 'IEEET3',
                  'ESAC1A', 'ESST1A', 'ESST1AV2', 'ESAC5A', 'IEEET2']),
-    ('pss', ['IEEEST', 'ST2CUT', 'STAB2A', 'IEEESTV2'
+    ('pss', ['IEEEST', 'ST2CUT', 'STAB2A', 'IEEESTV2', 'PSSX'
         # , 'IEEESTV3'
              ]),
     ('motor', ['Motor3', 'Motor5']),
